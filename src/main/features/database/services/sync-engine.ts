@@ -507,7 +507,7 @@ export async function downloadSnapshot(
 
         // Restore attachment data from content-addressed blobs
         if (doc._attachments) {
-          for (const [attName, att] of Object.entries(doc._attachments)) {
+          for (const [_attName, att] of Object.entries(doc._attachments)) {
             const anyAtt = att as any
             if (!anyAtt.stub) continue
 
