@@ -2,8 +2,11 @@ import { ConfigDBManager } from '~/core/database'
 import { baseDBManager } from '~/core/database'
 import { ipcManager } from '~/core/ipc'
 import { getCouchDBSize } from './cloud'
+import { syncViaWebDAV } from './webdav'
 import { ROLE_QUOTAS } from '@appTypes/sync'
 import log from 'electron-log/main'
+
+let webdavSyncInterval: NodeJS.Timeout | null = null
 
 export async function startSync(): Promise<void> {
   try {
@@ -52,7 +55,7 @@ export async function startSync(): Promise<void> {
         },
         isOfficial: true
       })
-    } else {
+    } else if (syncConfig.mode === 'selfHosted') {
       if (
         !syncConfig.selfHostedConfig.url ||
         !syncConfig.selfHostedConfig.auth.username ||
@@ -75,6 +78,43 @@ export async function startSync(): Promise<void> {
         },
         isOfficial: false
       })
+    } else if (syncConfig.mode === 'webdav') {
+      if (
+        !syncConfig.webdavConfig.url ||
+        !syncConfig.webdavConfig.auth.username ||
+        !syncConfig.webdavConfig.auth.password
+      ) {
+        log.error('[Sync] Missing webdav sync configuration')
+
+        ipcManager.send('db:sync-status', {
+          status: 'error',
+          message: 'Missing webdav sync configuration',
+          timestamp: new Date().toISOString()
+        })
+
+        return
+      }
+
+      ipcManager.send('db:sync-status', {
+        status: 'syncing',
+        message: 'Syncing via WebDAV...',
+        timestamp: new Date().toISOString()
+      })
+
+      try {
+        await syncViaWebDAV(syncConfig.webdavConfig, 'auto')
+        
+        if (syncConfig.webdavConfig.autoSync) {
+          if (webdavSyncInterval) clearInterval(webdavSyncInterval)
+          webdavSyncInterval = setInterval(() => {
+            syncViaWebDAV(syncConfig.webdavConfig, 'auto').catch(err => {
+              log.error('[Sync] WebDAV auto sync error:', err)
+            })
+          }, (syncConfig.webdavConfig.autoSyncInterval || 30) * 60 * 1000)
+        }
+      } catch (err) {
+        throw err
+      }
     }
 
     ipcManager.send('db:sync-status', {
@@ -146,7 +186,7 @@ export async function fullSync(): Promise<void> {
         },
         isOfficial: true
       })
-    } else {
+    } else if (syncConfig.mode === 'selfHosted') {
       if (
         !syncConfig.selfHostedConfig.url ||
         !syncConfig.selfHostedConfig.auth.username ||
@@ -170,6 +210,25 @@ export async function fullSync(): Promise<void> {
         },
         isOfficial: false
       })
+    } else if (syncConfig.mode === 'webdav') {
+      if (
+        !syncConfig.webdavConfig.url ||
+        !syncConfig.webdavConfig.auth.username ||
+        !syncConfig.webdavConfig.auth.password
+      ) {
+        log.error('[Sync] Missing webdav sync configuration')
+
+        ipcManager.send('db:sync-status', {
+          status: 'error',
+          message: 'Missing webdav sync configuration',
+          timestamp: new Date().toISOString()
+        })
+        ipcManager.send('db:full-sync-error', 'Missing webdav sync configuration')
+
+        return
+      }
+
+      await syncViaWebDAV(syncConfig.webdavConfig, 'upload')
     }
 
     ipcManager.send('db:sync-status', {
@@ -194,4 +253,8 @@ export async function fullSync(): Promise<void> {
 
 export function stopSync(): void {
   baseDBManager.stopAllSync()
+  if (webdavSyncInterval) {
+    clearInterval(webdavSyncInterval)
+    webdavSyncInterval = null
+  }
 }

@@ -369,6 +369,31 @@
       "password": "Password",
       "info": "<couchdb>CouchDB</couchdb> is an open-source document database used for storing and syncing data"
     },
+    "webdav": {
+      "serverAddress": "WebDAV Server URL",
+      "remotePath": "Remote Storage Path",
+      "username": "Username",
+      "password": "Password",
+      "testConnection": "Test Connection",
+      "upload": "Upload Local Snapshot",
+      "download": "Download Remote Snapshot",
+      "remoteInfo": "Remote Snapshot Info",
+      "loadingInfo": "Loading info...",
+      "noRemoteSnapshot": "No snapshot found on server",
+      "lastModified": "Last Modified",
+      "size": "Size",
+      "testing": "Testing connection...",
+      "testSuccess": "Connection successful",
+      "testFailed": "Connection failed",
+      "syncing": "Syncing...",
+      "syncSuccess": "Sync Successful",
+      "syncFailed": "Sync Failed"
+    },
+    "syncSpace": {
+      "title": "Sync Space",
+      "description": "Configure the local sync space path. When you convert a save path to cloud in game properties, the app will move the save folder here and create a junction link (no double space used). Use this with cloud drives (OneDrive, etc.) for seamless syncing.",
+      "path": "Sync Space Path"
+    },
     "info": {
       "status": "Status",
       "message": "Message",

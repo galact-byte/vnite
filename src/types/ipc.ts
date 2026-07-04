@@ -166,12 +166,18 @@ type MainIpcEvents =
       'db:compact-remote-database': () => void
       'db:reset-appearances-settings': () => void
       'db:remove-config-background': (theme: 'dark' | 'light' | '#all') => void
+      'db:test-webdav-connection': () => { success: boolean; message: string }
+      'db:webdav-sync': (direction: 'upload' | 'download' | 'auto') => void
+      'db:get-webdav-remote-info': () => { exists: boolean; lastModified?: string; size?: number } | null
 
       // Game save management events
       'game:search-save-paths': (gameId: string) => string[]
       'game:backup-save': (gameId: string) => string
       'game:restore-save': (gameId: string, saveId: string, skipIfTargetNewer?: boolean) => void
       'game:delete-save': (gameId: string, saveId: string) => void
+      'game:convert-save-to-sync-space': (gameId: string, savePath: string) => void
+      'game:restore-save-from-sync-space': (gameId: string, savePath: string) => void
+      'game:check-save-in-sync-space': (gameId: string, savePath: string) => boolean
 
       // Game memory management events
       'game:add-memory': (gameId: string) => gameDoc['memory']['memoryList'][string]
