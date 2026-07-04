@@ -26,14 +26,13 @@ export class WebDAVAdapter implements RemoteStorageAdapter {
     try {
       const result = await this.client.stat(path)
       if (!result) return null
-      // webdav stat returns different shapes depending on the server
-      const data = result.data ?? result
+      // webdav v5 returns FileStat | ResponseDataDetailed<FileStat>
+      const data: any = (result as any).data ?? result
       return {
-        size: data.size ?? data['content-length'] ?? data.props?.getcontentlength ?? 0,
+        size: data.size ?? data['content-length'] ?? 0,
         lastModified:
           data.lastmod ??
           data.mtime ??
-          data.props?.getlastmodified ??
           new Date().toISOString(),
         isDirectory: data.type === 'directory'
       }

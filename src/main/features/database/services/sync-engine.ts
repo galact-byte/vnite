@@ -47,7 +47,7 @@ const BASELINE_DOC_ID = 'webdav-sync-baseline'
 // ─── Crypto Helpers ──────────────────────────────────────────────────
 
 function sha256(data: Buffer | string): string {
-  return crypto.createHash('sha256').update(data).digest('hex')
+  return crypto.createHash('sha256').update(data as any).digest('hex')
 }
 
 /** Compute a content hash for a doc, excluding _rev and attachment inline data */
@@ -327,7 +327,7 @@ export async function uploadSnapshot(
 
         // Process attachments using content-addressed storage
         if (docClone._attachments) {
-          for (const [attName, att] of Object.entries(docClone._attachments)) {
+          for (const [_attName, att] of Object.entries(docClone._attachments)) {
             const anyAtt = att as any
             if (!anyAtt.data) continue // Skip stubs
 
