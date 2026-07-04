@@ -15,12 +15,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '~/components/ui/dropdown-menu'
-import { User, LogOut, HardDrive, Cloud, Key, InfoIcon, FolderSync, Upload, Download, Server } from 'lucide-react'
+import { User, LogOut, HardDrive, Cloud, Key, InfoIcon, FolderSync, Upload, Download, Server, AlertTriangle, Clock } from 'lucide-react'
 import { Link } from '~/components/ui/link'
 import { useTranslation } from 'react-i18next'
 import { useCloudSyncStore } from './store'
 import { ROLE_QUOTAS } from '@appTypes/sync'
 import { ConfigItem, ConfigItemPure } from '~/components/form'
+import { Switch } from '~/components/ui/switch'
 import { Trans } from 'react-i18next'
 
 export function CloudSync(): React.JSX.Element {
@@ -51,9 +52,11 @@ export function CloudSync(): React.JSX.Element {
   const [webdavRemotePath, setWebdavRemotePath, saveWebdavRemotePath] = useConfigLocalState('sync.webdavConfig.remotePath', true)
   const [webdavUsername, setWebdavUsername, saveWebdavUsername] = useConfigLocalState('sync.webdavConfig.auth.username', true)
   const [webdavPassword, setWebdavPassword, saveWebdavPassword] = useConfigLocalState('sync.webdavConfig.auth.password', true)
-
+  const [webdavAutoSync, setWebdavAutoSync] = useConfigLocalState('sync.webdavConfig.autoSync')
+  const [webdavAutoSyncInterval, setWebdavAutoSyncInterval] = useConfigLocalState('sync.webdavConfig.autoSyncInterval')
 
   const [webdavRemoteInfo, setWebdavRemoteInfo] = useState<{exists: boolean, lastModified?: string, size?: number} | null>(null)
+  const [webdavConflicts, setWebdavConflicts] = useState<Array<{docId: string, dbName: string}>>([])
 
   const [syncSpacePath, setSyncSpacePath, saveSyncSpacePath, setSyncSpacePathAndSave] = useConfigLocalState('sync.syncSpacePath', true)
 
@@ -104,6 +107,18 @@ export function CloudSync(): React.JSX.Element {
     ipcManager.on('account:auth-failed', (_event, message) => {
       toast.error(`${t('cloudSync.notifications.authError')}, ${message}`)
     })
+
+    // Listen for sync conflicts
+    const removeConflictListener = ipcManager.on('db:sync-conflicts', (_event, conflicts) => {
+      setWebdavConflicts(conflicts)
+      if (conflicts.length > 0) {
+        toast.warning(t('cloudSync.webdav.conflictsDetected', { count: conflicts.length }))
+      }
+    })
+
+    return () => {
+      removeConflictListener()
+    }
   }, [])
 
   const compactRemoteDatabase = async (): Promise<void> => {
@@ -173,11 +188,16 @@ export function CloudSync(): React.JSX.Element {
 
   const syncWebdav = async (direction: 'upload' | 'download' | 'auto') => {
     toast.promise(
-      ipcManager.invoke('db:webdav-sync', direction).then(() => {
+      ipcManager.invoke('db:webdav-sync', direction).then((result: any) => {
         // Refresh remote info after sync
         ipcManager.invoke('db:get-webdav-remote-info').then(info => {
           setWebdavRemoteInfo(info)
         })
+        // Show conflict warning if any
+        if (result?.conflicts?.length > 0) {
+          setWebdavConflicts(result.conflicts)
+          toast.warning(t('cloudSync.webdav.conflictsDetected', { count: result.conflicts.length }))
+        }
       }),
       {
         loading: t('cloudSync.webdav.syncing'),
@@ -641,6 +661,10 @@ export function CloudSync(): React.JSX.Element {
                         <Button variant="outline" onClick={testWebdav}>
                           {t('cloudSync.webdav.testConnection')}
                         </Button>
+                        <Button variant="secondary" onClick={() => syncWebdav('auto')}>
+                          <FolderSync className="w-4 h-4 mr-2" />
+                          {t('cloudSync.webdav.syncNow')}
+                        </Button>
                         <Button variant="secondary" onClick={() => syncWebdav('upload')}>
                           <Upload className="w-4 h-4 mr-2" />
                           {t('cloudSync.webdav.upload')}
@@ -650,6 +674,55 @@ export function CloudSync(): React.JSX.Element {
                           {t('cloudSync.webdav.download')}
                         </Button>
                       </div>
+
+                      {/* Auto-sync settings */}
+                      <div className="col-span-2 pt-3 border-t">
+                        <div className="flex flex-row items-center justify-between">
+                          <div className="flex items-center gap-2 select-none">
+                            <Clock className="w-4 h-4" />
+                            <span className="text-sm">{t('cloudSync.webdav.autoSync')}</span>
+                          </div>
+                          <Switch
+                            checked={webdavAutoSync}
+                            onCheckedChange={setWebdavAutoSync}
+                          />
+                        </div>
+                        {webdavAutoSync && (
+                          <div className="flex flex-row items-center gap-3 mt-3">
+                            <span className="text-sm text-muted-foreground whitespace-nowrap">
+                              {t('cloudSync.webdav.autoSyncInterval')}
+                            </span>
+                            <Input
+                              className={cn('w-24')}
+                              type="number"
+                              min={1}
+                              max={1440}
+                              value={webdavAutoSyncInterval ?? 30}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value, 10)
+                                if (val > 0 && val <= 1440) {
+                                  setWebdavAutoSyncInterval(val)
+                                }
+                              }}
+                            />
+                            <span className="text-sm text-muted-foreground">
+                              {t('cloudSync.webdav.minutes')}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Conflict warnings */}
+                      {webdavConflicts.length > 0 && (
+                        <div className="col-span-2 pt-2">
+                          <div className="flex items-center gap-2 p-3 text-sm border rounded-md bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                            <span>
+                              {t('cloudSync.webdav.conflictsWarning', { count: webdavConflicts.length })}
+                            </span>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="col-span-2 pt-2 text-xs text-muted-foreground border-t mt-2">
                         <p className="flex items-center gap-1 mb-2 font-medium">

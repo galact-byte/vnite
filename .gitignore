@@ -17,3 +17,6 @@ app
 
 # My custom plan
 vnite-webdav-sync-plan.md
+
+# OMC operational directory
+.omc/

@@ -375,8 +375,12 @@
       "username": "Username",
       "password": "Password",
       "testConnection": "Test Connection",
+      "syncNow": "Sync Now",
       "upload": "Upload Local Snapshot",
       "download": "Download Remote Snapshot",
+      "autoSync": "Auto Sync",
+      "autoSyncInterval": "Sync Interval",
+      "minutes": "min",
       "remoteInfo": "Remote Snapshot Info",
       "loadingInfo": "Loading info...",
       "noRemoteSnapshot": "No snapshot found on server",
@@ -387,7 +391,9 @@
       "testFailed": "Connection failed",
       "syncing": "Syncing...",
       "syncSuccess": "Sync Successful",
-      "syncFailed": "Sync Failed"
+      "syncFailed": "Sync Failed",
+      "conflictsDetected": "{{count}} sync conflict(s) detected, please resolve manually",
+      "conflictsWarning": "{{count}} sync conflict(s) exist. Please resolve in conflict manager before syncing again."
     },
     "syncSpace": {
       "title": "Sync Space",

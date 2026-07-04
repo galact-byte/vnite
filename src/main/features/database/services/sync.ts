@@ -102,15 +102,30 @@ export async function startSync(): Promise<void> {
       })
 
       try {
-        await syncViaWebDAV(syncConfig.webdavConfig, 'auto')
-        
+        const result = await syncViaWebDAV(syncConfig.webdavConfig, 'auto')
+
+        // Notify about conflicts if any
+        if (result.conflicts.length > 0) {
+          ipcManager.send('db:sync-conflicts', result.conflicts)
+        }
+
+        // Setup auto-sync interval
         if (syncConfig.webdavConfig.autoSync) {
           if (webdavSyncInterval) clearInterval(webdavSyncInterval)
+          const intervalMs = Math.max(
+            1,
+            syncConfig.webdavConfig.autoSyncInterval || 30
+          ) * 60 * 1000
           webdavSyncInterval = setInterval(() => {
-            syncViaWebDAV(syncConfig.webdavConfig, 'auto').catch(err => {
+            syncViaWebDAV(syncConfig.webdavConfig, 'auto').catch((err) => {
               log.error('[Sync] WebDAV auto sync error:', err)
             })
-          }, (syncConfig.webdavConfig.autoSyncInterval || 30) * 60 * 1000)
+          }, intervalMs)
+        } else {
+          if (webdavSyncInterval) {
+            clearInterval(webdavSyncInterval)
+            webdavSyncInterval = null
+          }
         }
       } catch (err) {
         throw err
@@ -228,7 +243,11 @@ export async function fullSync(): Promise<void> {
         return
       }
 
-      await syncViaWebDAV(syncConfig.webdavConfig, 'upload')
+      const result = await syncViaWebDAV(syncConfig.webdavConfig, 'upload')
+
+      if (result.conflicts.length > 0) {
+        ipcManager.send('db:sync-conflicts', result.conflicts)
+      }
     }
 
     ipcManager.send('db:sync-status', {
