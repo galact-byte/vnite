@@ -11,3 +11,9 @@ out
 dev
 app
 /target
+
+# npm mirror config
+.npmrc
+
+# My custom plan
+vnite-webdav-sync-plan.md

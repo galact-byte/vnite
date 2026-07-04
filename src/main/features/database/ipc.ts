@@ -10,7 +10,10 @@ import {
   getLocalStorageReport,
   getGameStorageDetail,
   getGameAttachmentTempFile,
-  removeGameImageAttachment
+  removeGameImageAttachment,
+  testWebDAVConnection,
+  syncViaWebDAV,
+  getRemoteSnapshotInfo
 } from './services'
 import { baseDBManager, ConfigDBManager } from '~/core/database'
 import { ipcManager } from '~/core/ipc'
@@ -119,4 +122,19 @@ export function setupDatabaseIPC(): void {
       await removeGameImageAttachment(gameId, attachmentId)
     }
   )
+
+  ipcManager.handle('db:test-webdav-connection', async () => {
+    const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
+    return await testWebDAVConnection(config)
+  })
+
+  ipcManager.handle('db:webdav-sync', async (_, direction: 'upload' | 'download' | 'auto') => {
+    const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
+    await syncViaWebDAV(config, direction)
+  })
+
+  ipcManager.handle('db:get-webdav-remote-info', async () => {
+    const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
+    return await getRemoteSnapshotInfo(config)
+  })
 }

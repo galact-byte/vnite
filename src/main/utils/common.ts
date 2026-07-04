@@ -523,3 +523,7 @@ export async function getTotalPathSize(paths: string[]): Promise<number> {
   }
   return sizes.reduce((acc, cur) => acc + cur, 0)
 }
+
+export function sanitizeFilename(name: string): string {
+  return name.replace(/[<>:"/\\|?*]+/g, '_').trim()
+}

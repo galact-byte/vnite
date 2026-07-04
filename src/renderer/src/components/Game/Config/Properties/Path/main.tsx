@@ -3,6 +3,16 @@ import { Button } from '@ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@ui/card'
 import { Checkbox } from '@ui/checkbox'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from '@ui/alert-dialog'
 import { Input } from '@ui/input'
 import {
   Select,
@@ -23,8 +33,107 @@ import { Switch } from '~/components/ui/switch'
 import { useGameLocalState, useGameState } from '~/hooks'
 import { cn } from '~/utils'
 
+import { Cloud, HardDrive, DownloadCloud, UploadCloud } from 'lucide-react'
+
 export interface PathHandle {
   save: () => Promise<void>
+}
+
+function SavePathSyncStatus({ gameId, savePath }: { gameId: string, savePath: string }) {
+  const { t } = useTranslation('game')
+  const [isCloud, setIsCloud] = useState<boolean | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
+
+  const checkStatus = useCallback(() => {
+    ipcManager.invoke('game:check-save-in-sync-space', gameId, savePath).then(setIsCloud).catch(() => setIsCloud(false))
+  }, [gameId, savePath])
+
+  useEffect(() => {
+    checkStatus()
+  }, [checkStatus])
+
+  const confirmConvert = () => {
+    setShowConfirm(false)
+    setLoading(true)
+    const p = ipcManager.invoke('game:convert-save-to-sync-space', gameId, savePath)
+    toast.promise(p, {
+      loading: t('detail.properties.path.syncSpace.converting'),
+      success: () => {
+        checkStatus()
+        return t('detail.properties.path.syncSpace.convertSuccess')
+      },
+      error: (err) => {
+        checkStatus()
+        return `${t('detail.properties.path.syncSpace.convertError')}: ${err.message}`
+      }
+    })
+    p.finally(() => setLoading(false))
+  }
+
+  const handleConvert = () => {
+    setShowConfirm(true)
+  }
+
+  const handleRestore = () => {
+    setLoading(true)
+    const p = ipcManager.invoke('game:restore-save-from-sync-space', gameId, savePath)
+    toast.promise(p, {
+      loading: t('detail.properties.path.syncSpace.restoring'),
+      success: () => {
+        checkStatus()
+        return t('detail.properties.path.syncSpace.restoreSuccess')
+      },
+      error: (err) => {
+        checkStatus()
+        return `${t('detail.properties.path.syncSpace.restoreError')}: ${err.message}`
+      }
+    })
+    p.finally(() => setLoading(false))
+  }
+
+  if (isCloud === null) return null
+
+  return (
+    <>
+      <div className="flex flex-row items-center justify-between p-2 mt-2 border rounded-md text-sm bg-muted/20">
+        <div className="flex flex-col gap-1 overflow-hidden pr-2">
+          <div className="flex items-center gap-2">
+            {isCloud ? <Cloud className="w-4 h-4 text-primary" /> : <HardDrive className="w-4 h-4 text-muted-foreground" />}
+            <span className="font-medium">{isCloud ? t('detail.properties.path.syncSpace.cloudStatus') : t('detail.properties.path.syncSpace.localStatus')}</span>
+          </div>
+          <div className="text-xs text-muted-foreground truncate" title={savePath}>{savePath}</div>
+        </div>
+        <div>
+          {isCloud ? (
+            <Button variant="outline" size="sm" onClick={handleRestore} disabled={loading}>
+              <DownloadCloud className="w-3.5 h-3.5 mr-1" />
+              {t('detail.properties.path.syncSpace.restoreBtn')}
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={handleConvert} disabled={loading}>
+              <UploadCloud className="w-3.5 h-3.5 mr-1" />
+              {t('detail.properties.path.syncSpace.convertBtn')}
+            </Button>
+          )}
+        </div>
+      </div>
+      <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('detail.properties.path.syncSpace.convertConfirmTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('detail.properties.path.syncSpace.convertConfirmDesc')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('utils:common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmConvert}>{t('utils:common.confirm')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
 }
 
 function PathComponent(
@@ -346,6 +455,14 @@ function PathComponent(
                 </Tooltip>
               </div>
             </div>
+            
+            {savePaths.filter(Boolean).length > 0 && (
+              <div className="col-span-2 col-start-2 -mt-3 flex flex-col gap-1">
+                {savePaths.filter(Boolean).map(savePath => (
+                  <SavePathSyncStatus key={savePath} savePath={savePath} gameId={gameId} />
+                ))}
+              </div>
+            )}
           </div>
 
           <Separator />

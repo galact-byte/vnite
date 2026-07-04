@@ -15,7 +15,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '~/components/ui/dropdown-menu'
-import { User, LogOut, HardDrive, Cloud, Key, InfoIcon } from 'lucide-react'
+import { User, LogOut, HardDrive, Cloud, Key, InfoIcon, FolderSync, Upload, Download, Server } from 'lucide-react'
 import { Link } from '~/components/ui/link'
 import { useTranslation } from 'react-i18next'
 import { useCloudSyncStore } from './store'
@@ -46,6 +46,24 @@ export function CloudSync(): React.JSX.Element {
   const [_3, setUserAccessToken] = useConfigLocalState('userInfo.accessToken')
   const [userRole, setUserRole] = useConfigLocalState('userInfo.role')
   const [userEmail, setUserEmail] = useConfigLocalState('userInfo.email')
+
+  const [webdavUrl, setWebdavUrl, saveWebdavUrl] = useConfigLocalState('sync.webdavConfig.url', true)
+  const [webdavRemotePath, setWebdavRemotePath, saveWebdavRemotePath] = useConfigLocalState('sync.webdavConfig.remotePath', true)
+  const [webdavUsername, setWebdavUsername, saveWebdavUsername] = useConfigLocalState('sync.webdavConfig.auth.username', true)
+  const [webdavPassword, setWebdavPassword, saveWebdavPassword] = useConfigLocalState('sync.webdavConfig.auth.password', true)
+
+
+  const [webdavRemoteInfo, setWebdavRemoteInfo] = useState<{exists: boolean, lastModified?: string, size?: number} | null>(null)
+
+  const [syncSpacePath, setSyncSpacePath, saveSyncSpacePath, setSyncSpacePathAndSave] = useConfigLocalState('sync.syncSpacePath', true)
+
+  useEffect(() => {
+    if (enabled && syncMode === 'webdav' && webdavUrl && webdavUsername) {
+      ipcManager.invoke('db:get-webdav-remote-info').then(info => {
+        setWebdavRemoteInfo(info)
+      }).catch(console.error)
+    }
+  }, [enabled, syncMode, webdavUrl, webdavUsername])
 
   const totalQuota = ROLE_QUOTAS[userRole].maxStorage
 
@@ -142,6 +160,33 @@ export function CloudSync(): React.JSX.Element {
     )
   }
 
+  const testWebdav = async () => {
+    toast.promise(
+      ipcManager.invoke('db:test-webdav-connection'),
+      {
+        loading: t('cloudSync.webdav.testing'),
+        success: (res: any) => res.success ? t(res.message) : (() => { throw new Error(t(res.message)) })(),
+        error: (err: any) => t('cloudSync.webdav.testFailed') + ': ' + err.message
+      }
+    )
+  }
+
+  const syncWebdav = async (direction: 'upload' | 'download' | 'auto') => {
+    toast.promise(
+      ipcManager.invoke('db:webdav-sync', direction).then(() => {
+        // Refresh remote info after sync
+        ipcManager.invoke('db:get-webdav-remote-info').then(info => {
+          setWebdavRemoteInfo(info)
+        })
+      }),
+      {
+        loading: t('cloudSync.webdav.syncing'),
+        success: t('cloudSync.webdav.syncSuccess'),
+        error: t('cloudSync.webdav.syncFailed')
+      }
+    )
+  }
+
   const handleFullSync = async (): Promise<void> => {
     try {
       await ipcManager.invoke('db:full-sync')
@@ -200,6 +245,13 @@ export function CloudSync(): React.JSX.Element {
       return t('cloudSync.official.developerEdition')
     } else {
       return t('cloudSync.official.premiumEdition')
+    }
+  }
+
+  const selectSyncSpacePath = async (): Promise<void> => {
+    const folderPath = await ipcManager.invoke('system:select-path-dialog', ['openDirectory'], undefined, syncSpacePath)
+    if (folderPath) {
+      await setSyncSpacePathAndSave(folderPath)
     }
   }
 
@@ -323,6 +375,10 @@ export function CloudSync(): React.JSX.Element {
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="selfHosted" id="selfHosted" />
                       <Label htmlFor="self-hosted">{t('cloudSync.modes.selfHosted')}</Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="webdav" id="webdav" />
+                      <Label htmlFor="webdav">WebDAV</Label>
                     </div>
                   </RadioGroup>
                 </div>
@@ -518,12 +574,145 @@ export function CloudSync(): React.JSX.Element {
               </Card>
             )}
 
+            {/* WebDAV mode UI */}
+            {enabled && syncMode === 'webdav' && (
+              <Card className="shadow-sm">
+                <CardContent className="">
+                  <div className="flex flex-col gap-5">
+                    <div className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-4 items-center">
+                      <div className="flex items-center gap-2 select-none whitespace-nowrap">
+                        <Server className="w-4 h-4" />
+                        <span>{t('cloudSync.webdav.serverAddress')}</span>
+                      </div>
+                      <div>
+                        <Input
+                          className={cn('w-full')}
+                          value={webdavUrl}
+                          onChange={(e) => setWebdavUrl(e.target.value)}
+                          onBlur={saveWebdavUrl}
+                          placeholder="https://your-webdav-server.com/dav/"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2 select-none whitespace-nowrap">
+                        <FolderSync className="w-4 h-4" />
+                        <span>{t('cloudSync.webdav.remotePath')}</span>
+                      </div>
+                      <div>
+                        <Input
+                          className={cn('w-full')}
+                          value={webdavRemotePath}
+                          onChange={(e) => setWebdavRemotePath(e.target.value)}
+                          onBlur={saveWebdavRemotePath}
+                          placeholder="/vnite-sync/"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2 select-none whitespace-nowrap">
+                        <User className="w-4 h-4" />
+                        <span>{t('cloudSync.webdav.username')}</span>
+                      </div>
+                      <div>
+                        <Input
+                          className={cn('w-full')}
+                          value={webdavUsername}
+                          onChange={(e) => setWebdavUsername(e.target.value)}
+                          onBlur={saveWebdavUsername}
+                          placeholder="admin"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2 select-none whitespace-nowrap">
+                        <Key className="w-4 h-4" />
+                        <span>{t('cloudSync.webdav.password')}</span>
+                      </div>
+                      <div>
+                        <Input
+                          className={cn('w-full')}
+                          type="password"
+                          value={webdavPassword}
+                          onChange={(e) => setWebdavPassword(e.target.value)}
+                          onBlur={saveWebdavPassword}
+                          placeholder="••••••••"
+                        />
+                      </div>
+                      
+                      <div className="col-span-2 pt-2 flex flex-row gap-2">
+                        <Button variant="outline" onClick={testWebdav}>
+                          {t('cloudSync.webdav.testConnection')}
+                        </Button>
+                        <Button variant="secondary" onClick={() => syncWebdav('upload')}>
+                          <Upload className="w-4 h-4 mr-2" />
+                          {t('cloudSync.webdav.upload')}
+                        </Button>
+                        <Button variant="secondary" onClick={() => syncWebdav('download')}>
+                          <Download className="w-4 h-4 mr-2" />
+                          {t('cloudSync.webdav.download')}
+                        </Button>
+                      </div>
+
+                      <div className="col-span-2 pt-2 text-xs text-muted-foreground border-t mt-2">
+                        <p className="flex items-center gap-1 mb-2 font-medium">
+                          <InfoIcon className="w-3.5 h-3.5" />
+                          <span>{t('cloudSync.webdav.remoteInfo')}</span>
+                        </p>
+                        {webdavRemoteInfo === null ? (
+                          <p>{t('cloudSync.webdav.loadingInfo')}</p>
+                        ) : webdavRemoteInfo.exists ? (
+                          <div className="flex flex-col gap-1">
+                            <p>{t('cloudSync.webdav.lastModified')}: {new Date(webdavRemoteInfo.lastModified || '').toLocaleString()}</p>
+                            <p>{t('cloudSync.webdav.size')}: {formatStorage(webdavRemoteInfo.size || 0)}</p>
+                          </div>
+                        ) : (
+                          <p>{t('cloudSync.webdav.noRemoteSnapshot')}</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Save button */}
             {enabled && (
               <div className={cn('flex justify-end pt-2')}>
                 <Button onClick={updateCloudSyncConfig}>{t('utils:common.save')}</Button>
               </div>
             )}
+          </div>
+        </CardContent>
+      </Card>
+      <Card className={cn('group mt-5')}>
+        <CardHeader>
+          <CardTitle className={cn('relative')}>
+            <div className={cn('flex flex-row justify-between items-center')}>
+              <div className={cn('flex items-center')}>{t('cloudSync.syncSpace.title')}</div>
+            </div>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className={cn('space-y-4 text-sm')}>
+            <div className="text-muted-foreground mb-4">
+              {t('cloudSync.syncSpace.description')}
+            </div>
+            <div className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-4 items-center">
+              <div className="flex items-center gap-2 select-none whitespace-nowrap">
+                <FolderSync className="w-4 h-4" />
+                <span>{t('cloudSync.syncSpace.path')}</span>
+              </div>
+              <div className={cn('flex flex-row gap-3 items-center')}>
+                <Input
+                  className={cn('flex-1')}
+                  value={syncSpacePath || ''}
+                  onChange={(e) => setSyncSpacePath(e.target.value)}
+                  onBlur={saveSyncSpacePath}
+                  placeholder="D:\OneDrive\VniteSaves"
+                />
+                <Button variant={'outline'} size={'icon'} onClick={selectSyncSpacePath}>
+                  <span className={cn('icon-[mdi--folder-outline] w-5 h-5')}></span>
+                </Button>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>

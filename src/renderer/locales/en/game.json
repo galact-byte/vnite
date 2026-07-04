@@ -549,7 +549,21 @@
           "error": "Search failed: {{message}}"
         },
         "maxBackups": "Maximum Save Backups",
-        "autoRestoreSave": "Automatically restore the latest save on launch",
+        "autoRestoreSave": "Auto restore latest backup on launch",
+        "syncSpace": {
+          "converting": "Converting save to sync space...",
+          "convertSuccess": "Successfully converted to sync space and linked",
+          "convertError": "Failed to convert to sync space",
+          "restoring": "Restoring save to local...",
+          "restoreSuccess": "Successfully restored from sync space",
+          "restoreError": "Failed to restore from sync space",
+          "cloudStatus": "Cloud Synced",
+          "localStatus": "Local Save",
+          "convertBtn": "Convert to Cloud",
+          "restoreBtn": "Restore to Local",
+          "convertConfirmTitle": "Confirm Conversion to Sync Space?",
+          "convertConfirmDesc": "Please ensure your sync space path is actively monitored by a cloud drive client (like OneDrive, Baidu Netdisk, etc.). Converting will move the save files to that directory and create a symbolic link."
+        },
         "notifications": {
           "configuring": "Configuring preset…",
           "success": "Preset configured successfully"

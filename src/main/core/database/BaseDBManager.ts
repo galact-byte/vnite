@@ -57,7 +57,7 @@ export class BaseDBManager {
     return db
   }
 
-  private getDatabase(dbName: string): PouchDB.Database {
+  public getRawDatabase(dbName: string): PouchDB.Database {
     const db = this.dbInstances[dbName]
     if (!db) {
       throw new Error(`Database ${dbName} not initialized`)
@@ -66,7 +66,7 @@ export class BaseDBManager {
   }
 
   async setValue(dbName: string, docId: string, path: string, value: any): Promise<void> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     try {
       if (docId === '#all' && path === '#all') {
@@ -98,7 +98,7 @@ export class BaseDBManager {
   }
 
   async getValue<T>(dbName: string, docId: string, path: string, defaultValue: T): Promise<T> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     try {
       let doc: any
@@ -144,7 +144,7 @@ export class BaseDBManager {
   }
 
   async removeDoc(dbName: string, docId: string): Promise<void> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     try {
       const doc = await db.get(docId)
@@ -158,7 +158,7 @@ export class BaseDBManager {
   }
 
   async getAllDocs(dbName: string): Promise<Record<string, any>> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
     const result = await db.allDocs({ include_docs: true })
 
     // Convert result.rows to a record with doc._id as key
@@ -174,7 +174,7 @@ export class BaseDBManager {
   }
 
   async getExistingDoc<T = Record<string, any>>(dbName: string, docId: string): Promise<T | null> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     try {
       return (await db.get(docId)) as T
@@ -187,7 +187,7 @@ export class BaseDBManager {
   }
 
   async setAllDocs(dbName: string, docs: any[]): Promise<void> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     await Promise.all(
       docs.map((doc) => {
@@ -242,7 +242,7 @@ export class BaseDBManager {
       return
     }
 
-    const localDb = this.getDatabase(dbName)
+    const localDb = this.getRawDatabase(dbName)
     const { auth, isOfficial } = options
 
     const remoteDbName = isOfficial
@@ -302,7 +302,7 @@ export class BaseDBManager {
       return
     }
 
-    const localDb = this.getDatabase(dbName)
+    const localDb = this.getRawDatabase(dbName)
     const { auth, isOfficial } = options
 
     const remoteDbName = isOfficial
@@ -417,7 +417,7 @@ export class BaseDBManager {
     attachment: Buffer | string,
     type?: string
   ): Promise<void> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     // Convert attachment to buffer if it's a file path
     if (typeof attachment === 'string') {
@@ -494,7 +494,7 @@ export class BaseDBManager {
       ext: 'webp'
     } as T
   ): Promise<AttachmentReturnType<T>> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     try {
       const attachment = await db.getAttachment(docId, attachmentId)
@@ -526,7 +526,7 @@ export class BaseDBManager {
   }
 
   async listAttachmentNames(dbName: string, docId: string): Promise<string[]> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
     try {
       const doc = await db.get(docId)
       if (doc && doc._attachments) {
@@ -542,7 +542,7 @@ export class BaseDBManager {
   }
 
   async checkAttachment(dbName: string, docId: string, attachmentId: string): Promise<boolean> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     try {
       const doc = await db.get(docId)
@@ -554,7 +554,7 @@ export class BaseDBManager {
   }
 
   async removeAttachment(dbName: string, docId: string, attachmentId: string): Promise<void> {
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     try {
       const doc = await db.get(docId)
@@ -607,7 +607,7 @@ export class BaseDBManager {
       this.stopChangeListener(dbName)
     }
 
-    const db = this.getDatabase(dbName)
+    const db = this.getRawDatabase(dbName)
 
     this.changeListeners[dbName] = db
       .changes({

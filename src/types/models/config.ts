@@ -266,7 +266,7 @@ export interface configLocalDocs {
   }
   sync: {
     enabled: boolean
-    mode: 'official' | 'selfHosted'
+    mode: 'official' | 'selfHosted' | 'webdav'
     officialConfig: {
       auth: {
         username: string
@@ -280,6 +280,17 @@ export interface configLocalDocs {
         password: string
       }
     }
+    webdavConfig: {
+      url: string
+      remotePath: string
+      auth: {
+        username: string
+        password: string
+      }
+      autoSync: boolean
+      autoSyncInterval: number
+    }
+    syncSpacePath: string
   }
   hotkeys: {
     captureRectangle: string
@@ -553,7 +564,18 @@ export const DEFAULT_CONFIG_LOCAL_VALUES: Readonly<configLocalDocs> = {
         username: '',
         password: ''
       }
-    }
+    },
+    webdavConfig: {
+      url: '',
+      remotePath: '/vnite-sync/',
+      auth: {
+        username: '',
+        password: ''
+      },
+      autoSync: false,
+      autoSyncInterval: 30
+    },
+    syncSpacePath: ''
   },
   hotkeys: {
     captureRectangle: '',

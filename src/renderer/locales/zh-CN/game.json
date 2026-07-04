@@ -550,6 +550,20 @@
         },
         "maxBackups": "最大存档备份数量",
         "autoRestoreSave": "启动时自动还原最新存档",
+        "syncSpace": {
+          "converting": "正在转换存档至同步空间...",
+          "convertSuccess": "已成功转换至同步空间，并创建软链接",
+          "convertError": "转换至同步空间失败",
+          "restoring": "正在恢复本地存档...",
+          "restoreSuccess": "已成功从同步空间恢复",
+          "restoreError": "从同步空间恢复失败",
+          "cloudStatus": "云端同步中",
+          "localStatus": "本地存档",
+          "convertBtn": "转换至云端",
+          "restoreBtn": "转回本地",
+          "convertConfirmTitle": "确认转换至同步空间？",
+          "convertConfirmDesc": "请确保您的同步空间路径正被网盘客户端（如 OneDrive、百度网盘等）持续同步中。转换后将把存档实际移动到该目录并创建软链接。"
+        },
         "notifications": {
           "configuring": "正在配置预设…",
           "success": "预设配置成功"

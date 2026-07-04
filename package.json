@@ -15,7 +15,7 @@
     "dev": "electron-vite dev",
     "prebuild": "napi build --cwd native --platform --release -o dist",
     "build": "npm run typecheck && electron-vite build",
-    "postinstall": "electron-builder install-app-deps && patch-package",
+    "postinstall": "patch-package",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac",
@@ -100,6 +100,7 @@
     "type-fest": "^4.41.0",
     "vaul": "^1.1.2",
     "vnite-native": "file:native",
+    "webdav": "^5.10.0",
     "zod": "^3.25.74",
     "zustand": "^5.0.6"
   },
