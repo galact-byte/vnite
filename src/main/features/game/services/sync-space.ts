@@ -1,8 +1,7 @@
 import log from 'electron-log/main'
 import fse from 'fs-extra'
 import path from 'path'
-import { ConfigDBManager, GameDBManager } from '~/core/database'
-import { sanitizeFilename } from '~/utils'
+import { ConfigDBManager } from '~/core/database'
 import fs from 'fs'
 
 async function getSyncSpacePath(): Promise<string> {
