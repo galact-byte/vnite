@@ -524,6 +524,48 @@ export async function getTotalPathSize(paths: string[]): Promise<number> {
   return sizes.reduce((acc, cur) => acc + cur, 0)
 }
 
+/** Windows reserved filenames (case-insensitive) */
+const WIN_RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+])
+
 export function sanitizeFilename(name: string): string {
-  return name.replace(/[<>:"/\\|?*]+/g, '_').trim()
+  let cleaned = name
+    // Replace Windows-illegal characters
+    .replace(/[<>:"/\\|?*]+/g, '_')
+    // Replace C0 control characters (U+0000-U+001F) and DEL (U+007F)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    // Collapse multiple underscores/spaces
+    .replace(/_{2,}/g, '_')
+    .replace(/\.{2,}/g, '.')
+    .trim()
+
+  // Remove leading/trailing spaces and dots (Windows can't handle these)
+  cleaned = cleaned.replace(/^[. ]+/, '').replace(/[. ]+$/, '')
+
+  // Handle Windows reserved names: append underscore
+  const upperName = cleaned.toUpperCase()
+  // Check exact match or "NAME." prefix (also reserved on Windows)
+  const baseName = upperName.split('.')[0]
+  if (WIN_RESERVED_NAMES.has(baseName)) {
+    cleaned = cleaned.replace(baseName, `${cleaned.split('.')[0]}_`)
+  }
+
+  // Truncate to 255 characters (common filesystem limit)
+  if (cleaned.length > 255) {
+    const dotIndex = cleaned.lastIndexOf('.')
+    if (dotIndex > 0 && dotIndex < cleaned.length - 1 && cleaned.length - dotIndex <= 20) {
+      // Has a reasonable extension — truncate the name part
+      const ext = cleaned.slice(dotIndex)
+      cleaned = cleaned.slice(0, 255 - ext.length) + ext
+    } else {
+      cleaned = cleaned.slice(0, 255)
+    }
+  }
+
+  // Fallback: if everything was stripped, use a safe default
+  return cleaned || 'untitled'
 }

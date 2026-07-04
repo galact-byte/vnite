@@ -167,7 +167,13 @@ type MainIpcEvents =
       'db:reset-appearances-settings': () => void
       'db:remove-config-background': (theme: 'dark' | 'light' | '#all') => void
       'db:test-webdav-connection': () => { success: boolean; message: string }
-      'db:webdav-sync': (direction: 'upload' | 'download' | 'auto') => void
+      'db:webdav-sync': (direction: 'upload' | 'download' | 'auto') => {
+        uploaded: number
+        downloaded: number
+        conflicts: Array<{ docId: string; dbName: string }>
+        attachmentsUploaded: number
+        attachmentsDownloaded: number
+      }
       'db:get-webdav-remote-info': () => { exists: boolean; lastModified?: string; size?: number } | null
 
       // Game save management events
@@ -391,6 +397,9 @@ type RendererIpcEvents = {
   ]
   'db:sync-status': [
     { status: 'syncing' | 'success' | 'error'; message: string; timestamp: string }
+  ]
+  'db:sync-conflicts': [
+    Array<{ docId: string; dbName: string }>
   ]
   'db:full-sync-error': [error: string]
   'db:full-synced': []

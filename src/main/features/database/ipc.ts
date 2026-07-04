@@ -130,7 +130,7 @@ export function setupDatabaseIPC(): void {
 
   ipcManager.handle('db:webdav-sync', async (_, direction: 'upload' | 'download' | 'auto') => {
     const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
-    await syncViaWebDAV(config, direction)
+    return await syncViaWebDAV(config, direction)
   })
 
   ipcManager.handle('db:get-webdav-remote-info', async () => {
