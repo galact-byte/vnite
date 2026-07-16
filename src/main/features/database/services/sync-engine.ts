@@ -1,5 +1,6 @@
 import path from 'path'
 import crypto from 'crypto'
+import log from 'electron-log/main'
 import { RemoteStorageAdapter } from './sync-adapter/types'
 import { baseDBManager } from '~/core/database'
 
@@ -9,6 +10,10 @@ export interface DocEntry {
   rev: string
   /** SHA256 of the doc JSON content (excluding _rev and _attachments data) */
   hash: string
+  /** Tombstone: the doc was deleted on some device and the deletion is synced */
+  deleted?: true
+  /** ISO timestamp of the deletion; drives tombstone GC (see TOMBSTONE_RETENTION_MS) */
+  deletedAt?: string
 }
 
 export interface Manifest {
@@ -31,9 +36,19 @@ export interface SyncResult {
   uploaded: number
   downloaded: number
   conflicts: ConflictInfo[]
+  errors: string[]
   attachmentsUploaded: number
   attachmentsDownloaded: number
 }
+
+export interface SyncProgress {
+  phase: 'download' | 'upload'
+  database: string
+  current: number
+  total: number
+}
+
+export type SyncProgressCallback = (progress: SyncProgress) => void
 
 // ─── Constants ───────────────────────────────────────────────────────
 
@@ -44,10 +59,51 @@ const LOCK_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
 const BASELINE_DOC_ID = 'webdav-sync-baseline'
 
+// Tombstones older than this are garbage-collected from manifest + baseline
+const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+
+// ─── In-process Mutex ────────────────────────────────────────────────
+
+let syncInFlight = false
+
+async function withSyncMutex<T>(fn: () => Promise<T>): Promise<T> {
+  if (syncInFlight) {
+    throw new Error('Sync already in progress')
+  }
+  syncInFlight = true
+  try {
+    return await fn()
+  } finally {
+    syncInFlight = false
+  }
+}
+
 // ─── Crypto Helpers ──────────────────────────────────────────────────
 
 function sha256(data: Buffer | string): string {
-  return crypto.createHash('sha256').update(data as any).digest('hex')
+  return crypto
+    .createHash('sha256')
+    .update(data as any)
+    .digest('hex')
+}
+
+/**
+ * Deterministic recursive serialization: object keys are sorted at every
+ * nesting level, so any nested change alters the output. Keys whose value is
+ * `undefined` are omitted (matching JSON.stringify object semantics).
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null'
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => (v === undefined ? 'null' : stableStringify(v))).join(',')}]`
+  }
+  const obj = value as Record<string, unknown>
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`
 }
 
 /** Compute a content hash for a doc, excluding _rev and attachment inline data */
@@ -58,18 +114,18 @@ function docContentHash(doc: any): string {
     const cleanAtts: any = {}
     for (const [name, att] of Object.entries(stripped._attachments)) {
       const a = att as any
+      // Only content-derived metadata: digest/length/content_type are stable
+      // across devices, while revpos/stub depend on local write history and
+      // would make identical content hash differently on different devices.
       cleanAtts[name] = {
         content_type: a.content_type,
         digest: a.digest,
-        length: a.length,
-        revpos: a.revpos
+        length: a.length
       }
-      // keep stub flag if present, drop inline data
-      if (a.stub) cleanAtts[name].stub = true
     }
     stripped._attachments = cleanAtts
   }
-  return sha256(JSON.stringify(stripped, Object.keys(stripped).sort()))
+  return sha256(stableStringify(stripped))
 }
 
 // ─── Device ID ───────────────────────────────────────────────────────
@@ -148,10 +204,7 @@ async function acquireLock(
     try {
       const lockData = JSON.parse(content as string)
       // If the lock belongs to another device and hasn't expired, reject
-      if (
-        lockData.deviceId !== deviceId &&
-        Date.now() - lockData.timestamp < LOCK_TIMEOUT_MS
-      ) {
+      if (lockData.deviceId !== deviceId && Date.now() - lockData.timestamp < LOCK_TIMEOUT_MS) {
         throw new Error('Sync is locked by another device.')
       }
       // Otherwise (same device or expired lock), we can proceed
@@ -161,10 +214,7 @@ async function acquireLock(
     }
   }
 
-  await adapter.writeFile(
-    lockPath,
-    JSON.stringify({ deviceId, timestamp: Date.now() })
-  )
+  await adapter.writeFile(lockPath, JSON.stringify({ deviceId, timestamp: Date.now() }))
 }
 
 async function releaseLock(
@@ -192,6 +242,77 @@ async function releaseLock(
   }
 }
 
+// ─── Manifest / Entry Helpers ────────────────────────────────────────
+
+function isLiveEntry(entry: DocEntry | undefined): entry is DocEntry {
+  return !!entry && !entry.deleted
+}
+
+function isTombstone(entry: DocEntry | undefined): boolean {
+  return !!entry && entry.deleted === true
+}
+
+function entriesEqual(a: DocEntry | undefined, b: DocEntry | undefined): boolean {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  if (!!a.deleted !== !!b.deleted) return false
+  if (a.deleted && b.deleted) return true
+  return a.hash === b.hash
+}
+
+function cloneManifestDatabases(manifest: Manifest | null): Manifest['databases'] {
+  const databases: Manifest['databases'] = {}
+  for (const dbName of SYNCABLE_DATABASES) {
+    databases[dbName] = {}
+    const source = manifest?.databases?.[dbName]
+    if (source) {
+      for (const [docId, entry] of Object.entries(source)) {
+        databases[dbName][docId] = { ...entry }
+      }
+    }
+  }
+  return databases
+}
+
+function remoteDocPath(remotePath: string, dbName: string, docId: string): string {
+  return path.posix.join(remotePath, 'docs', dbName, `${encodeURIComponent(docId)}.json`)
+}
+
+/**
+ * Tombstone GC. Legacy tombstones without `deletedAt` (written before the
+ * field existed) are treated as deleted right now: `deletedAt` is backfilled
+ * so they survive one further full retention period instead of vanishing
+ * immediately. Tombstones whose `deletedAt` is older than the retention
+ * window are removed.
+ *
+ * Known trade-off (accepted — matches CouchDB behavior after compaction):
+ * a device that stays offline longer than the retention period and then
+ * syncs will see its local copies of collected-tombstone docs as "new" and
+ * resurrect them on the remote.
+ *
+ * Returns true when any entry was modified or removed.
+ */
+function gcTombstones(databases: Manifest['databases'], now: number): boolean {
+  let dirty = false
+  for (const dbEntries of Object.values(databases)) {
+    for (const [docId, entry] of Object.entries(dbEntries)) {
+      if (!isTombstone(entry)) continue
+      const deletedAtMs = entry.deletedAt ? Date.parse(entry.deletedAt) : NaN
+      if (!Number.isFinite(deletedAtMs)) {
+        // Legacy (or unparseable) tombstone → count retention from now
+        entry.deletedAt = new Date(now).toISOString()
+        dirty = true
+        continue
+      }
+      if (now - deletedAtMs >= TOMBSTONE_RETENTION_MS) {
+        delete dbEntries[docId]
+        dirty = true
+      }
+    }
+  }
+  return dirty
+}
+
 // ─── Build Local Manifest ────────────────────────────────────────────
 
 async function buildLocalManifest(deviceId: string): Promise<Manifest> {
@@ -205,7 +326,7 @@ async function buildLocalManifest(deviceId: string): Promise<Manifest> {
   for (const dbName of SYNCABLE_DATABASES) {
     manifest.databases[dbName] = {}
     const db = baseDBManager.getRawDatabase(dbName)
-    const allDocs = await db.allDocs({ include_docs: true, attachments: true, binary: true })
+    const allDocs = await db.allDocs({ include_docs: true })
 
     for (const row of allDocs.rows) {
       if (!row.doc || row.doc._id.startsWith('_design/')) continue
@@ -219,418 +340,108 @@ async function buildLocalManifest(deviceId: string): Promise<Manifest> {
   return manifest
 }
 
-// ─── Upload Local Snapshot ───────────────────────────────────────────
+// ─── Attachment Helpers ──────────────────────────────────────────────
 
-export async function uploadSnapshot(
+/**
+ * Upload all inline attachments of a doc to content-addressed storage and
+ * replace them with stubs referencing the uploaded blob (`_sha256`).
+ * Returns a JSON-safe clone of the doc.
+ */
+async function extractAndUploadAttachments(
   adapter: RemoteStorageAdapter,
-  remotePath: string
-): Promise<SyncResult> {
-  const deviceId = await getDeviceId()
-  await acquireLock(adapter, remotePath, deviceId)
+  remotePath: string,
+  fullDoc: any,
+  result: SyncResult
+): Promise<any> {
+  const attachments = fullDoc._attachments
+  const docClone = JSON.parse(JSON.stringify({ ...fullDoc, _attachments: undefined }))
 
-  const result: SyncResult = {
-    uploaded: 0,
-    downloaded: 0,
-    conflicts: [],
-    attachmentsUploaded: 0,
-    attachmentsDownloaded: 0
-  }
+  if (!attachments) return docClone
 
-  try {
-    // 1. Build current local manifest
-    const localManifest = await buildLocalManifest(deviceId)
+  const cleanAtts: any = {}
+  for (const [attName, att] of Object.entries(attachments)) {
+    const anyAtt: any = { ...(att as any) }
+    if (anyAtt.data != null) {
+      const attBuffer = Buffer.isBuffer(anyAtt.data)
+        ? anyAtt.data
+        : Buffer.from(anyAtt.data, 'base64')
 
-    // 2. Load baseline (last synced state)
-    const baseline = await loadBaselineManifest()
+      const attHash = sha256(attBuffer)
+      const attDir = path.posix.join(remotePath, 'attachments')
+      const attPath = path.posix.join(attDir, `${attHash}.bin`)
 
-    // 3. Load remote manifest (if exists)
-    const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
-    let remoteManifest: Manifest | null = null
-    if (await adapter.exists(manifestPath)) {
-      const content = await adapter.readFile(manifestPath, 'text')
-      remoteManifest = JSON.parse(content as string)
-    }
-
-    // 4. Collect set of all doc IDs across local + baseline + remote
-    const allDbNames = new Set(SYNCABLE_DATABASES)
-    for (const dbName of SYNCABLE_DATABASES) {
-      const baselineDB = baseline?.databases?.[dbName] ?? {}
-      const remoteDB = remoteManifest?.databases?.[dbName] ?? {}
-      Object.keys(baselineDB).forEach((id) => allDbNames.add(id))
-      Object.keys(remoteDB).forEach((id) => allDbNames.add(id))
-    }
-
-    // 5. For each database, determine what to upload
-    for (const dbName of SYNCABLE_DATABASES) {
-      const localDB = localManifest.databases[dbName] ?? {}
-      const baselineDB = baseline?.databases?.[dbName] ?? {}
-      const remoteDB = remoteManifest?.databases?.[dbName] ?? {}
-
-      const db = baseDBManager.getRawDatabase(dbName)
-      const allDocIds = new Set([
-        ...Object.keys(localDB),
-        ...Object.keys(baselineDB),
-        ...Object.keys(remoteDB)
-      ])
-
-      for (const docId of allDocIds) {
-        const localEntry = localDB[docId]
-        const baselineEntry = baselineDB[docId]
-        const remoteEntry = remoteDB[docId]
-
-        // ── Doc deleted locally ──
-        if (!localEntry) {
-          // If it existed in baseline, mark as deletion (remove from remote)
-          // We handle this by not including it in the new manifest
-          continue
-        }
-
-        const locallyChanged = !baselineEntry || localEntry.hash !== baselineEntry.hash
-        const remotelyChanged =
-          remoteEntry && baselineEntry && remoteEntry.hash !== baselineEntry.hash
-
-        if (!locallyChanged) {
-          // No local change — keep whatever is on remote (or nothing)
-          continue
-        }
-
-        if (remotelyChanged) {
-          // Both sides changed → CONFLICT
-          result.conflicts.push({ docId, dbName })
-
-          // Write conflict marker on remote
-          const conflictFileName = `${encodeURIComponent(docId)}.conflict.${deviceId}.${Date.now()}.json`
-          const conflictPath = path.posix.join(remotePath, 'conflicts', conflictFileName)
-          await ensureDirRecursive(adapter, path.posix.join(remotePath, 'conflicts'))
-
-          // Get full doc with attachment data for conflict copy
-          const fullDoc = await db.get(docId, { attachments: true, binary: true })
-          const docClone = JSON.parse(JSON.stringify(fullDoc))
-          // Strip inline attachment data for the conflict file (keep references)
-          if (docClone._attachments) {
-            for (const att of Object.values(docClone._attachments)) {
-              const a = att as any
-              if (a.data) {
-                delete a.data
-                a.stub = true
-              }
-            }
-          }
-          await adapter.writeFile(conflictPath, JSON.stringify(docClone, null, 2))
-          continue
-        }
-
-        // Locally changed, remote unchanged → upload
-        const fullDoc = await db.get(docId, { attachments: true, binary: true })
-        // Deep clone to avoid mutating PouchDB internals
-        const docClone = JSON.parse(JSON.stringify(fullDoc))
-
-        // Process attachments using content-addressed storage
-        if (docClone._attachments) {
-          for (const [_attName, att] of Object.entries(docClone._attachments)) {
-            const anyAtt = att as any
-            if (!anyAtt.data) continue // Skip stubs
-
-            const attBuffer = Buffer.from(anyAtt.data, 'base64')
-            const attHash = sha256(attBuffer)
-            const attFileName = `${attHash}.bin`
-            const attDir = path.posix.join(remotePath, 'attachments')
-            const attPath = path.posix.join(attDir, attFileName)
-
-            // Content-addressed: only upload if not already present
-            if (!(await adapter.exists(attPath))) {
-              await ensureDirRecursive(adapter, attDir)
-              await adapter.writeFile(attPath, attBuffer, {
-                contentType: anyAtt.content_type || 'application/octet-stream'
-              })
-              result.attachmentsUploaded++
-            }
-
-            // Replace inline data with stub reference
-            delete anyAtt.data
-            anyAtt.stub = true
-            // Preserve digest for later reconstruction
-            anyAtt._sha256 = attHash
-          }
-        }
-
-        // Upload doc JSON
-        const docDir = path.posix.join(remotePath, 'docs', dbName)
-        const docPath = path.posix.join(docDir, `${encodeURIComponent(docId)}.json`)
-        await ensureDirRecursive(adapter, docDir)
-        await adapter.writeFile(docPath, JSON.stringify(docClone), {
-          contentType: 'application/json'
+      // Content-addressed: only upload if not already present
+      if (!(await adapter.exists(attPath))) {
+        await ensureDirRecursive(adapter, attDir)
+        await adapter.writeFile(attPath, attBuffer, {
+          contentType: anyAtt.content_type || 'application/octet-stream'
         })
-        result.uploaded++
-
-        // Update remote manifest entry
-        if (!remoteManifest) {
-          remoteManifest = { version: '2.0', deviceId, lastSync: '', databases: {} }
-        }
-        if (!remoteManifest.databases[dbName]) {
-          remoteManifest.databases[dbName] = {}
-        }
-        remoteManifest.databases[dbName][docId] = {
-          rev: localEntry.rev,
-          hash: localEntry.hash
-        }
+        result.attachmentsUploaded++
       }
+
+      delete anyAtt.data
+      anyAtt.stub = true
+      anyAtt._sha256 = attHash
     }
-
-    // 6. Write updated manifest and save as new baseline
-    if (remoteManifest) {
-      remoteManifest.lastSync = new Date().toISOString()
-      remoteManifest.deviceId = deviceId
-      await adapter.writeFile(manifestPath, JSON.stringify(remoteManifest), {
-        contentType: 'application/json'
-      })
-    }
-
-    // Merge remote changes into local manifest for the baseline
-    const mergedManifest = remoteManifest
-      ? { ...remoteManifest, deviceId, lastSync: new Date().toISOString() }
-      : localManifest
-    await saveBaselineManifest(mergedManifest)
-
-    return result
-  } finally {
-    await releaseLock(adapter, remotePath, deviceId)
+    cleanAtts[attName] = anyAtt
   }
+
+  docClone._attachments = cleanAtts
+  return docClone
 }
 
-// ─── Download Remote Snapshot ────────────────────────────────────────
-
-export async function downloadSnapshot(
+/**
+ * Restore attachment inline data from content-addressed blobs.
+ * Returns false when any attachment blob is missing (the doc must then be
+ * skipped so we never save a stub pointing at nothing).
+ */
+async function restoreAttachments(
   adapter: RemoteStorageAdapter,
-  remotePath: string
-): Promise<SyncResult> {
-  const deviceId = await getDeviceId()
-  await acquireLock(adapter, remotePath, deviceId)
+  remotePath: string,
+  doc: any,
+  result: SyncResult
+): Promise<boolean> {
+  if (!doc._attachments) return true
 
-  const result: SyncResult = {
-    uploaded: 0,
-    downloaded: 0,
-    conflicts: [],
-    attachmentsUploaded: 0,
-    attachmentsDownloaded: 0
+  for (const att of Object.values(doc._attachments)) {
+    const anyAtt = att as any
+    if (!anyAtt.stub) continue
+    if (!anyAtt._sha256) return false
+
+    const attPath = path.posix.join(remotePath, 'attachments', `${anyAtt._sha256}.bin`)
+    if (!(await adapter.exists(attPath))) return false
+
+    const attBuffer = (await adapter.readFile(attPath, 'binary')) as Buffer
+    anyAtt.data = attBuffer.toString('base64')
+    delete anyAtt.stub
+    delete anyAtt._sha256
+    result.attachmentsDownloaded++
   }
 
-  try {
-    const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
-    if (!(await adapter.exists(manifestPath))) {
-      // No remote data — nothing to download
-      return result
-    }
-
-    const manifestContent = await adapter.readFile(manifestPath, 'text')
-    const remoteManifest: Manifest = JSON.parse(manifestContent as string)
-
-    // Load baseline for three-way merge
-    const baseline = await loadBaselineManifest()
-
-    for (const dbName of SYNCABLE_DATABASES) {
-      const remoteDB = remoteManifest.databases?.[dbName]
-      if (!remoteDB) continue
-
-      const baselineDB = baseline?.databases?.[dbName] ?? {}
-      const db = baseDBManager.getRawDatabase(dbName)
-
-      // Build local rev map
-      const localDocs = await db.allDocs({ include_docs: false })
-      const localRevs = new Map(localDocs.rows.map((r) => [r.id, r.value.rev]))
-
-      const docsToSave: any[] = []
-
-      for (const [docId, remoteEntry] of Object.entries(remoteDB)) {
-        const localRev = localRevs.get(docId)
-        const baselineEntry = baselineDB[docId]
-
-        // ── Three-way merge ──
-        if (!localRev) {
-          // Doc doesn't exist locally → download (new from remote)
-          // (unless it was locally deleted after baseline — that's a conflict scenario simplified here)
-        } else if (baselineEntry) {
-          const localDoc = await db.get(docId).catch(() => null)
-          const localHash = localDoc ? docContentHash(localDoc) : ''
-
-          const locallyChanged = localHash !== baselineEntry.hash
-          const remotelyChanged = remoteEntry.hash !== baselineEntry.hash
-
-          if (locallyChanged && remotelyChanged) {
-            // CONFLICT — both sides changed
-            result.conflicts.push({ docId, dbName })
-
-            // Download remote version as conflict copy
-            const docPath = path.posix.join(
-              remotePath,
-              'docs',
-              dbName,
-              `${encodeURIComponent(docId)}.json`
-            )
-            if (await adapter.exists(docPath)) {
-              const docContent = await adapter.readFile(docPath, 'text')
-              const remoteDoc = JSON.parse(docContent as string)
-              const conflictDoc = {
-                ...remoteDoc,
-                _id: `${docId}.conflict.remote.${Date.now()}`
-              }
-              delete conflictDoc._rev
-              docsToSave.push(conflictDoc)
-              result.downloaded++
-            }
-            continue
-          }
-
-          if (!locallyChanged && !remotelyChanged) {
-            // Both unchanged — nothing to do
-            continue
-          }
-
-          if (!locallyChanged && remotelyChanged) {
-            // Remote changed, local unchanged → safe to download
-          }
-        }
-        // else: no baseline entry (first sync), and doc exists locally with different rev
-        // For safety during cold start, skip — don't overwrite local data silently
-
-        // ── Actually download the doc ──
-        const docPath = path.posix.join(
-          remotePath,
-          'docs',
-          dbName,
-          `${encodeURIComponent(docId)}.json`
-        )
-        if (!(await adapter.exists(docPath))) continue
-
-        const docContent = await adapter.readFile(docPath, 'text')
-        const doc = JSON.parse(docContent as string)
-
-        // Restore attachment data from content-addressed blobs
-        if (doc._attachments) {
-          for (const [_attName, att] of Object.entries(doc._attachments)) {
-            const anyAtt = att as any
-            if (!anyAtt.stub) continue
-
-            const attHash = anyAtt._sha256 || anyAtt.digest?.replace(/[^a-f0-9]/g, '')
-            let attBuffer: Buffer | null = null
-
-            // Try SHA256-based lookup first
-            if (anyAtt._sha256) {
-              const attPath = path.posix.join(remotePath, 'attachments', `${anyAtt._sha256}.bin`)
-              if (await adapter.exists(attPath)) {
-                attBuffer = (await adapter.readFile(attPath, 'binary')) as Buffer
-              }
-            }
-
-            // Fallback: try digest-based lookup
-            if (!attBuffer && attHash) {
-              const attPath = path.posix.join(remotePath, 'attachments', `${attHash}.bin`)
-              if (await adapter.exists(attPath)) {
-                attBuffer = (await adapter.readFile(attPath, 'binary')) as Buffer
-              }
-            }
-
-            if (attBuffer) {
-              anyAtt.data = attBuffer.toString('base64')
-              delete anyAtt.stub
-              delete anyAtt._sha256
-              result.attachmentsDownloaded++
-            }
-            // If attachment blob not found, leave as stub — will be missing locally
-          }
-        }
-
-        // Prepare for save: use existing _rev if doc exists, otherwise remove _rev
-        if (localRev) {
-          doc._rev = localRev
-        } else {
-          delete doc._rev
-        }
-
-        docsToSave.push(doc)
-        result.downloaded++
-      }
-
-      // Batch save to PouchDB (default new_edits: true)
-      if (docsToSave.length > 0) {
-        await db.bulkDocs(docsToSave)
-      }
-    }
-
-    // Save remote manifest as new baseline
-    const newBaseline: Manifest = {
-      ...remoteManifest,
-      deviceId,
-      lastSync: new Date().toISOString()
-    }
-    await saveBaselineManifest(newBaseline)
-
-    return result
-  } finally {
-    await releaseLock(adapter, remotePath, deviceId)
-  }
+  return true
 }
 
-// ─── Bidirectional Sync (auto mode) ──────────────────────────────────
+// ─── Download (three-way merge, tombstone-aware) ─────────────────────
 
-export async function syncBidirectional(
-  adapter: RemoteStorageAdapter,
-  remotePath: string
-): Promise<SyncResult> {
-  const deviceId = await getDeviceId()
-  await acquireLock(adapter, remotePath, deviceId)
-
-  const result: SyncResult = {
-    uploaded: 0,
-    downloaded: 0,
-    conflicts: [],
-    attachmentsUploaded: 0,
-    attachmentsDownloaded: 0
-  }
-
-  try {
-    // First, download changes from remote
-    const dlResult = await downloadSnapshotInternal(
-      adapter,
-      remotePath,
-      deviceId
-    )
-    result.downloaded = dlResult.downloaded
-    result.attachmentsDownloaded = dlResult.attachmentsDownloaded
-    result.conflicts.push(...dlResult.conflicts)
-
-    // Then, upload local changes
-    const ulResult = await uploadSnapshotInternal(
-      adapter,
-      remotePath,
-      deviceId
-    )
-    result.uploaded = ulResult.uploaded
-    result.attachmentsUploaded = ulResult.attachmentsUploaded
-    // Merge conflicts (avoid duplicates)
-    for (const c of ulResult.conflicts) {
-      if (!result.conflicts.some((e) => e.docId === c.docId && e.dbName === c.dbName)) {
-        result.conflicts.push(c)
-      }
-    }
-
-    return result
-  } finally {
-    await releaseLock(adapter, remotePath, deviceId)
-  }
-}
-
-// ─── Internal helpers (no lock management — called by bidirectional) ──
-
+/**
+ * Download phase. For every doc in remote manifest ∪ baseline, decide by
+ * three-way comparison (baseline B / local L / remote R) whether to download,
+ * delete locally, skip, or report a conflict. The baseline advances per-doc:
+ * only docs that were actually applied locally get their baseline entry
+ * updated; conflicts, skips and failures keep the old baseline value so they
+ * are retried / re-reported on the next sync.
+ */
 async function downloadSnapshotInternal(
   adapter: RemoteStorageAdapter,
   remotePath: string,
-  deviceId: string
+  deviceId: string,
+  onProgress?: SyncProgressCallback
 ): Promise<SyncResult> {
   const result: SyncResult = {
     uploaded: 0,
     downloaded: 0,
     conflicts: [],
+    errors: [],
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0
   }
@@ -642,106 +453,184 @@ async function downloadSnapshotInternal(
   const remoteManifest: Manifest = JSON.parse(manifestContent as string)
   const baseline = await loadBaselineManifest()
 
+  const newBaselineDatabases = cloneManifestDatabases(baseline)
+
   for (const dbName of SYNCABLE_DATABASES) {
-    const remoteDB = remoteManifest.databases?.[dbName]
-    if (!remoteDB) continue
-
+    const remoteDB = remoteManifest.databases?.[dbName] ?? {}
     const baselineDB = baseline?.databases?.[dbName] ?? {}
+    const newBaselineDB = newBaselineDatabases[dbName]
     const db = baseDBManager.getRawDatabase(dbName)
-    const localDocs = await db.allDocs({ include_docs: false })
-    const localRevs = new Map(localDocs.rows.map((r) => [r.id, r.value.rev]))
 
+    // Local docs with content, so we can hash them for the three-way compare
+    const allDocs = await db.allDocs({ include_docs: true })
+    const localDocs = new Map<string, any>()
+    for (const row of allDocs.rows) {
+      if (!row.doc || row.doc._id.startsWith('_design/')) continue
+      localDocs.set(row.doc._id, row.doc)
+    }
+
+    // Queued writes: docsToSave[i] corresponds to pendingBaseline[i]
     const docsToSave: any[] = []
+    const pendingBaseline: Array<{ docId: string; entry: DocEntry; isDelete: boolean }> = []
 
-    for (const [docId, remoteEntry] of Object.entries(remoteDB)) {
-      const localRev = localRevs.get(docId)
-      const baselineEntry = baselineDB[docId]
+    const allDocIds = new Set([...Object.keys(remoteDB), ...Object.keys(baselineDB)])
+    const totalDocs = allDocIds.size
+    let processedDocs = 0
 
-      // Skip if already in sync
-      if (!localRev && !baselineEntry) {
-        // New doc from remote — download
-      } else if (localRev && baselineEntry) {
-        const localDoc = await db.get(docId).catch(() => null)
-        const localHash = localDoc ? docContentHash(localDoc) : ''
-        const locallyChanged = localHash !== baselineEntry.hash
-        const remotelyChanged = remoteEntry.hash !== baselineEntry.hash
+    for (const docId of allDocIds) {
+      processedDocs++
+      onProgress?.({
+        phase: 'download',
+        database: dbName,
+        current: processedDocs,
+        total: totalDocs
+      })
+      const remoteEntry: DocEntry | undefined = remoteDB[docId]
+      const baselineEntry: DocEntry | undefined = baselineDB[docId]
+      const localDoc = localDocs.get(docId)
+      const localHash = localDoc ? docContentHash(localDoc) : null
 
-        if (locallyChanged && remotelyChanged) {
-          result.conflicts.push({ docId, dbName })
+      // ── R missing entirely (only in baseline) ──
+      // A missing entry is NOT a tombstone: legitimate deletions always
+      // leave a tombstone, so a wholly absent entry means the remote was
+      // wiped or remotePath points at a fresh directory. Never delete the
+      // local doc here; the upload phase re-uploads it (B live) or handles
+      // tombstone propagation / baseline cleanup.
+      if (!remoteEntry) continue
+
+      // ── R is a tombstone ──
+      if (isTombstone(remoteEntry)) {
+        if (!localDoc) {
+          // Deleted on both sides (or never existed here) → record tombstone
+          newBaselineDB[docId] = { ...remoteEntry }
           continue
         }
-        if (!remotelyChanged) continue // Nothing new from remote
-        if (locallyChanged && !remotelyChanged) continue // Keep local changes
-      } else if (localRev && !baselineEntry) {
-        // Doc exists locally but no baseline — first sync, skip to avoid data loss
+        // Local doc exists
+        const locallyChanged = !isLiveEntry(baselineEntry) || localHash !== baselineEntry.hash
+        if (!locallyChanged) {
+          // Remote deletion vs unchanged local → propagate deletion locally
+          docsToSave.push({ _id: docId, _rev: localDoc._rev, _deleted: true })
+          pendingBaseline.push({ docId, entry: { ...remoteEntry }, isDelete: true })
+        } else {
+          // Delete vs edit → edit wins: keep local doc, baseline unchanged;
+          // the upload phase will re-upload it over the tombstone.
+          result.conflicts.push({ docId, dbName })
+        }
         continue
       }
 
-      // Download doc
-      const docPath = path.posix.join(
-        remotePath, 'docs', dbName,
-        `${encodeURIComponent(docId)}.json`
-      )
-      if (!(await adapter.exists(docPath))) continue
+      // ── R is live ──
+      const remotelyChanged = !entriesEqual(remoteEntry, baselineEntry)
 
-      const docContent = await adapter.readFile(docPath, 'text')
-      const doc = JSON.parse(docContent as string)
-
-      // Restore attachments
-      if (doc._attachments) {
-        for (const att of Object.values(doc._attachments)) {
-          const anyAtt = att as any
-          if (!anyAtt.stub) continue
-          if (anyAtt._sha256) {
-            const attPath = path.posix.join(
-              remotePath, 'attachments', `${anyAtt._sha256}.bin`
-            )
-            if (await adapter.exists(attPath)) {
-              const attBuffer = (await adapter.readFile(attPath, 'binary')) as Buffer
-              anyAtt.data = attBuffer.toString('base64')
-              delete anyAtt.stub
-              delete anyAtt._sha256
-              result.attachmentsDownloaded++
-            }
-          }
+      if (!localDoc) {
+        if (!baselineEntry) {
+          // New doc from remote → download
+        } else if (isTombstone(baselineEntry)) {
+          if (!remotelyChanged) continue // Tombstone already synced
+          // Recreated on remote after a synced deletion → download
+        } else if (!remotelyChanged) {
+          // Local deletion vs unchanged remote → skip; the upload phase
+          // propagates the deletion (tombstone).
+          continue
+        } else {
+          // Local deletion vs remote edit → edit wins: restore from remote
+          result.conflicts.push({ docId, dbName })
         }
+      } else {
+        const locallyChanged = !isLiveEntry(baselineEntry) || localHash !== baselineEntry.hash
+
+        if (!remotelyChanged) continue // Nothing new from remote
+
+        if (locallyChanged) {
+          if (localHash === remoteEntry.hash) {
+            // Both changed but content converged → adopt as synced
+            newBaselineDB[docId] = { rev: localDoc._rev, hash: localHash as string }
+            continue
+          }
+          // True conflict: both sides changed → skip, keep old baseline so the
+          // conflict stays visible on every sync until one side converges.
+          result.conflicts.push({ docId, dbName })
+          continue
+        }
+        // Remote changed, local unchanged → download (overwrite local)
       }
 
-      if (localRev) {
-        doc._rev = localRev
+      // ── Download the doc ──
+      const docPath = remoteDocPath(remotePath, dbName, docId)
+      if (!(await adapter.exists(docPath))) {
+        result.errors.push(`${dbName}/${docId}: remote doc file missing`)
+        continue
+      }
+
+      let doc: any
+      try {
+        const docContent = await adapter.readFile(docPath, 'text')
+        doc = JSON.parse(docContent as string)
+      } catch (err: any) {
+        result.errors.push(`${dbName}/${docId}: failed to read remote doc (${err?.message})`)
+        continue
+      }
+
+      if (!(await restoreAttachments(adapter, remotePath, doc, result))) {
+        result.errors.push(`${dbName}/${docId}: attachment blob missing on remote`)
+        continue
+      }
+
+      if (localDoc) {
+        doc._rev = localDoc._rev
       } else {
         delete doc._rev
       }
 
       docsToSave.push(doc)
-      result.downloaded++
+      pendingBaseline.push({ docId, entry: { ...remoteEntry }, isDelete: false })
     }
 
+    // Batch save; check per-doc results — failed docs keep their old baseline
     if (docsToSave.length > 0) {
-      await db.bulkDocs(docsToSave)
+      const responses = await db.bulkDocs(docsToSave)
+      responses.forEach((res: any, i) => {
+        const { docId, entry, isDelete } = pendingBaseline[i]
+        if (res && res.error) {
+          result.errors.push(`${dbName}/${docId}: ${res.name ?? res.error} (${res.message ?? ''})`)
+          return
+        }
+        newBaselineDB[docId] = entry
+        if (!isDelete) result.downloaded++
+      })
     }
   }
 
-  // Update baseline
-  const newBaseline: Manifest = {
-    ...remoteManifest,
+  await saveBaselineManifest({
+    version: '2.0',
     deviceId,
-    lastSync: new Date().toISOString()
-  }
-  await saveBaselineManifest(newBaseline)
+    lastSync: new Date().toISOString(),
+    databases: newBaselineDatabases
+  })
 
   return result
 }
 
+// ─── Upload (three-way merge, tombstone-aware) ───────────────────────
+
+/**
+ * Upload phase. For every doc in local manifest ∪ baseline, decide by
+ * three-way comparison whether to upload, propagate a deletion (tombstone),
+ * skip, or report a conflict. Baseline and remote manifest advance per-doc:
+ * only actually-uploaded docs get new entries; conflicts and failures keep
+ * both at their old values so they are retried / re-reported next sync.
+ */
 async function uploadSnapshotInternal(
   adapter: RemoteStorageAdapter,
   remotePath: string,
-  deviceId: string
+  deviceId: string,
+  onProgress?: SyncProgressCallback
 ): Promise<SyncResult> {
   const result: SyncResult = {
     uploaded: 0,
     downloaded: 0,
     conflicts: [],
+    errors: [],
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0
   }
@@ -756,90 +645,249 @@ async function uploadSnapshotInternal(
     remoteManifest = JSON.parse(content as string)
   }
 
+  const newBaselineDatabases = cloneManifestDatabases(baseline)
+  const newRemoteDatabases = cloneManifestDatabases(remoteManifest)
+  let remoteManifestDirty = false
+
   for (const dbName of SYNCABLE_DATABASES) {
     const localDB = localManifest.databases[dbName] ?? {}
     const baselineDB = baseline?.databases?.[dbName] ?? {}
     const remoteDB = remoteManifest?.databases?.[dbName] ?? {}
-
+    const newBaselineDB = newBaselineDatabases[dbName]
+    const newRemoteDB = newRemoteDatabases[dbName]
     const db = baseDBManager.getRawDatabase(dbName)
 
-    for (const [docId, localEntry] of Object.entries(localDB)) {
-      const baselineEntry = baselineDB[docId]
-      const remoteEntry = remoteDB[docId]
+    const allDocIds = new Set([...Object.keys(localDB), ...Object.keys(baselineDB)])
+    const totalDocs = allDocIds.size
+    let processedDocs = 0
 
-      const locallyChanged = !baselineEntry || localEntry.hash !== baselineEntry.hash
-      if (!locallyChanged) continue
+    for (const docId of allDocIds) {
+      processedDocs++
+      onProgress?.({
+        phase: 'upload',
+        database: dbName,
+        current: processedDocs,
+        total: totalDocs
+      })
+      const localEntry: DocEntry | undefined = localDB[docId]
+      const baselineEntry: DocEntry | undefined = baselineDB[docId]
+      const remoteEntry: DocEntry | undefined = remoteDB[docId]
 
-      const remotelyChanged =
-        remoteEntry && baselineEntry && remoteEntry.hash !== baselineEntry.hash
+      // ── Local doc deleted ──
+      if (!localEntry) {
+        if (!baselineEntry) continue // Never synced, nothing to do
+        if (isTombstone(baselineEntry)) continue // Deletion already synced
 
-      if (remotelyChanged) {
-        result.conflicts.push({ docId, dbName })
+        const remotelyChanged = !entriesEqual(remoteEntry, baselineEntry)
+
+        if (isTombstone(remoteEntry)) {
+          // Deleted on both sides → adopt remote tombstone
+          newBaselineDB[docId] = { ...remoteEntry }
+          continue
+        }
+
+        if (remotelyChanged && isLiveEntry(remoteEntry)) {
+          // Local deletion vs remote edit → edit wins; the download phase
+          // restores the doc. Keep baseline/manifest untouched.
+          result.conflicts.push({ docId, dbName })
+          continue
+        }
+
+        // Local deletion vs unchanged remote (or remote already gone)
+        // → propagate deletion: remove remote doc file, write tombstone.
+        try {
+          const docPath = remoteDocPath(remotePath, dbName, docId)
+          if (await adapter.exists(docPath)) {
+            await adapter.deleteFile(docPath)
+          }
+          const tombstone: DocEntry = {
+            rev: baselineEntry.rev,
+            hash: '',
+            deleted: true,
+            deletedAt: new Date().toISOString()
+          }
+          newRemoteDB[docId] = { ...tombstone }
+          newBaselineDB[docId] = { ...tombstone }
+          remoteManifestDirty = true
+        } catch (err: any) {
+          result.errors.push(`${dbName}/${docId}: failed to delete on remote (${err?.message})`)
+        }
         continue
       }
 
-      // Upload doc
-      const fullDoc = await db.get(docId, { attachments: true, binary: true })
-      const docClone = JSON.parse(JSON.stringify(fullDoc))
-
-      if (docClone._attachments) {
-        for (const att of Object.values(docClone._attachments)) {
-          const anyAtt = att as any
-          if (!anyAtt.data) continue
-
-          const attBuffer = Buffer.from(anyAtt.data, 'base64')
-          const attHash = sha256(attBuffer)
-          const attFileName = `${attHash}.bin`
-          const attDir = path.posix.join(remotePath, 'attachments')
-          const attPath = path.posix.join(attDir, attFileName)
-
-          if (!(await adapter.exists(attPath))) {
-            await ensureDirRecursive(adapter, attDir)
-            await adapter.writeFile(attPath, attBuffer, {
-              contentType: anyAtt.content_type || 'application/octet-stream'
-            })
-            result.attachmentsUploaded++
-          }
-
-          delete anyAtt.data
-          anyAtt.stub = true
-          anyAtt._sha256 = attHash
+      // ── Local doc exists ──
+      const baselineLive = isLiveEntry(baselineEntry)
+      const locallyChanged = !baselineLive || localEntry.hash !== baselineEntry.hash
+      if (!locallyChanged) {
+        // ── L live, L==B, but R entry missing entirely ──
+        // Legitimate deletions always leave a tombstone, so a wholly absent
+        // remote entry means the remote was wiped or remotePath points at a
+        // fresh directory → treat as new: fall through and re-upload,
+        // recording fresh manifest + baseline entries.
+        if (remoteEntry === undefined) {
+          // fall through to the upload branch below
+        } else {
+          // Unchanged since baseline; remote-side differences are handled by
+          // the download phase.
+          continue
         }
       }
 
-      const docDir = path.posix.join(remotePath, 'docs', dbName)
-      const docPath = path.posix.join(docDir, `${encodeURIComponent(docId)}.json`)
-      await ensureDirRecursive(adapter, docDir)
-      await adapter.writeFile(docPath, JSON.stringify(docClone), {
-        contentType: 'application/json'
-      })
-      result.uploaded++
+      const remotelyChanged = !!remoteEntry && !entriesEqual(remoteEntry, baselineEntry)
 
-      if (!remoteManifest) {
-        remoteManifest = { version: '2.0', deviceId, lastSync: '', databases: {} }
+      if (isLiveEntry(remoteEntry) && remotelyChanged) {
+        if (remoteEntry.hash === localEntry.hash) {
+          // Content converged (e.g. cold start with identical data, or the
+          // same edit made on both sides) → adopt as synced, nothing to upload
+          newBaselineDB[docId] = { rev: localEntry.rev, hash: localEntry.hash }
+          continue
+        }
+
+        // True conflict: both sides changed → do NOT upload/overwrite.
+        // Baseline and remote manifest keep their old values, so the conflict
+        // is re-reported every sync until one side converges. A copy of the
+        // local doc is parked under conflicts/ on the remote for recovery.
+        result.conflicts.push({ docId, dbName })
+        try {
+          const fullDoc = await db.get(docId, { attachments: true, binary: true })
+          const conflictClone = await extractAndUploadAttachments(
+            adapter,
+            remotePath,
+            fullDoc,
+            result
+          )
+          const conflictDir = path.posix.join(remotePath, 'conflicts')
+          const conflictName = `${dbName}__${encodeURIComponent(docId)}__${Date.now()}.json`
+          await ensureDirRecursive(adapter, conflictDir)
+          await adapter.writeFile(
+            path.posix.join(conflictDir, conflictName),
+            JSON.stringify(conflictClone, null, 2),
+            { contentType: 'application/json' }
+          )
+        } catch (err: any) {
+          log.warn(`[Sync] Failed to write conflict copy for ${dbName}/${docId}:`, err)
+        }
+        continue
       }
-      if (!remoteManifest.databases[dbName]) {
-        remoteManifest.databases[dbName] = {}
-      }
-      remoteManifest.databases[dbName][docId] = {
-        rev: localEntry.rev,
-        hash: localEntry.hash
+
+      // Local new/edited, remote unchanged, missing, or tombstoned
+      // (edit wins over a remote tombstone) → upload
+      try {
+        const fullDoc = await db.get(docId, { attachments: true, binary: true })
+        const docClone = await extractAndUploadAttachments(adapter, remotePath, fullDoc, result)
+
+        const docDir = path.posix.join(remotePath, 'docs', dbName)
+        await ensureDirRecursive(adapter, docDir)
+        await adapter.writeFile(
+          path.posix.join(docDir, `${encodeURIComponent(docId)}.json`),
+          JSON.stringify(docClone),
+          { contentType: 'application/json' }
+        )
+        result.uploaded++
+
+        const newEntry: DocEntry = { rev: localEntry.rev, hash: localEntry.hash }
+        newRemoteDB[docId] = { ...newEntry }
+        newBaselineDB[docId] = { ...newEntry }
+        remoteManifestDirty = true
+      } catch (err: any) {
+        result.errors.push(`${dbName}/${docId}: upload failed (${err?.message})`)
       }
     }
   }
 
-  if (remoteManifest) {
-    remoteManifest.lastSync = new Date().toISOString()
-    remoteManifest.deviceId = deviceId
-    await adapter.writeFile(manifestPath, JSON.stringify(remoteManifest), {
+  // GC expired tombstones from both the outgoing remote manifest and the new
+  // baseline (kept in lockstep so a collected tombstone doesn't linger in one
+  // and resurrect decisions in the other).
+  const gcNow = Date.now()
+  const remoteGcDirty = gcTombstones(newRemoteDatabases, gcNow)
+  gcTombstones(newBaselineDatabases, gcNow)
+
+  // Write the remote manifest (entries only advanced for successful uploads)
+  if (remoteManifestDirty || remoteGcDirty || !remoteManifest) {
+    const updatedManifest: Manifest = {
+      version: '2.0',
+      deviceId,
+      lastSync: new Date().toISOString(),
+      databases: newRemoteDatabases
+    }
+    await adapter.writeFile(manifestPath, JSON.stringify(updatedManifest), {
       contentType: 'application/json'
     })
   }
 
-  const mergedManifest = remoteManifest
-    ? { ...remoteManifest, deviceId, lastSync: new Date().toISOString() }
-    : localManifest
-  await saveBaselineManifest(mergedManifest)
+  await saveBaselineManifest({
+    version: '2.0',
+    deviceId,
+    lastSync: new Date().toISOString(),
+    databases: newBaselineDatabases
+  })
 
   return result
+}
+
+// ─── Public API (mutex + lock wrappers) ──────────────────────────────
+
+export async function uploadSnapshot(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  onProgress?: SyncProgressCallback
+): Promise<SyncResult> {
+  return withSyncMutex(async () => {
+    const deviceId = await getDeviceId()
+    await acquireLock(adapter, remotePath, deviceId)
+    try {
+      return await uploadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+    } finally {
+      await releaseLock(adapter, remotePath, deviceId)
+    }
+  })
+}
+
+export async function downloadSnapshot(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  onProgress?: SyncProgressCallback
+): Promise<SyncResult> {
+  return withSyncMutex(async () => {
+    const deviceId = await getDeviceId()
+    await acquireLock(adapter, remotePath, deviceId)
+    try {
+      return await downloadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+    } finally {
+      await releaseLock(adapter, remotePath, deviceId)
+    }
+  })
+}
+
+export async function syncBidirectional(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  onProgress?: SyncProgressCallback
+): Promise<SyncResult> {
+  return withSyncMutex(async () => {
+    const deviceId = await getDeviceId()
+    await acquireLock(adapter, remotePath, deviceId)
+    try {
+      // Download first, then upload — one lock spans both phases
+      const dlResult = await downloadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+      const ulResult = await uploadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+
+      const result: SyncResult = {
+        uploaded: ulResult.uploaded,
+        downloaded: dlResult.downloaded,
+        conflicts: [...dlResult.conflicts],
+        errors: [...dlResult.errors, ...ulResult.errors],
+        attachmentsUploaded: ulResult.attachmentsUploaded,
+        attachmentsDownloaded: dlResult.attachmentsDownloaded
+      }
+      for (const c of ulResult.conflicts) {
+        if (!result.conflicts.some((e) => e.docId === c.docId && e.dbName === c.dbName)) {
+          result.conflicts.push(c)
+        }
+      }
+      return result
+    } finally {
+      await releaseLock(adapter, remotePath, deviceId)
+    }
+  })
 }

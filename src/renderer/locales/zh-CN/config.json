@@ -393,12 +393,35 @@
       "syncSuccess": "同步成功",
       "syncFailed": "同步失败",
       "conflictsDetected": "检测到 {{count}} 个同步冲突，请进入冲突管理处理",
-      "conflictsWarning": "存在 {{count}} 个同步冲突。请在冲突管理中手动解决后再次同步。"
+      "conflictsWarning": "存在 {{count}} 个同步冲突。请在冲突管理中手动解决后再次同步。",
+      "progress": {
+        "download": "正在下载 {{database}}（{{current}}/{{total}}）",
+        "upload": "正在上传 {{database}}（{{current}}/{{total}}）"
+      },
+      "conflicts": {
+        "title": "{{count}} 个同步冲突",
+        "clear": "知道了",
+        "detectedAt": "检测于"
+      },
+      "status": {
+        "title": "本机同步状态",
+        "lastSync": "上次同步",
+        "success": "成功",
+        "conflict": "{{count}} 个冲突",
+        "error": "失败",
+        "never": "本机还没有同步过"
+      },
+      "validation": {
+        "urlRequired": "请先填写 WebDAV 服务器地址",
+        "urlInvalid": "WebDAV 服务器地址需以 http:// 或 https:// 开头"
+      }
     },
     "syncSpace": {
       "title": "同步空间",
       "description": "配置本地同步空间路径。当您在游戏属性中转换存档至云端时，应用将把游戏存档移动至此目录并创建软链接（不会占用双倍空间），配合网盘（如 OneDrive/百度网盘等）可实现无感云同步。",
-      "path": "同步空间路径"
+      "path": "同步空间路径",
+      "browse": "浏览…",
+      "hint": "请确认该目录位于网盘客户端（如 OneDrive 等）的同步范围内，否则存档不会被同步。"
     },
     "info": {
       "status": "状态",

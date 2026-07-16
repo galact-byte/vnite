@@ -4,7 +4,7 @@ import log from 'electron-log/main'
 import windowStateKeeper from 'electron-window-state'
 import { join } from 'path'
 import { baseDBManager, GameDBManager, runDatabaseMigrations } from '~/core/database'
-import { startSync } from '~/features/database'
+import { startSync, syncBeforeQuit } from '~/features/database'
 import {
   getAppRootPath,
   getDataPath,
@@ -341,7 +341,22 @@ app.on('window-all-closed', () => {
 })
 
 // Add cleanup logic before application exit
-app.on('before-quit', async () => {
+let quitSyncDone = false
+app.on('before-quit', async (event) => {
+  // Run one upload sync before quitting (webdav + autoSync only). We must
+  // preventDefault synchronously, then re-enter quit once the sync settles —
+  // the guard flag makes the second pass fall through to the real cleanup.
+  if (!quitSyncDone) {
+    quitSyncDone = true
+    event.preventDefault()
+    try {
+      await syncBeforeQuit()
+    } finally {
+      app.quit()
+    }
+    return
+  }
+
   // Clean up PowerShell instance
   cleanupPowerShell()
   await nativeCleanup()

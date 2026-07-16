@@ -1,16 +1,100 @@
 import { configLocalDocs } from '@appTypes/models'
 import path from 'path'
+import { ConfigDBManager, baseDBManager } from '~/core/database'
+import { ipcManager } from '~/core/ipc'
 import { WebDAVAdapter } from './sync-adapter/webdav-adapter'
 import {
   uploadSnapshot,
   downloadSnapshot,
   syncBidirectional,
+  ConflictInfo,
   Manifest,
+  SyncProgress,
+  SyncProgressCallback,
   SyncResult
 } from './sync-engine'
 import log from 'electron-log/main'
 
 type WebDAVConfig = configLocalDocs['sync']['webdavConfig']
+
+export interface WebDAVSyncOptions {
+  /** Suppress renderer progress events (background/auto sync) */
+  silent?: boolean
+}
+
+const CONFLICTS_DOC_ID = 'webdav-sync-conflicts'
+const PROGRESS_THROTTLE_DOCS = 10
+
+/**
+ * Persist the conflict list to config-local (covering app restarts) and
+ * notify the renderer. Each sync overwrites the previous list; an empty
+ * result clears it without emitting an event.
+ */
+async function recordSyncConflicts(conflicts: ConflictInfo[]): Promise<void> {
+  const detectedAt = new Date().toISOString()
+  const items = conflicts.map((c) => ({ dbName: c.dbName, docId: c.docId, detectedAt }))
+  await baseDBManager.setValue('config-local', CONFLICTS_DOC_ID, '#all', {
+    items,
+    updatedAt: detectedAt
+  })
+  if (conflicts.length > 0) {
+    ipcManager.send('db:sync-conflicts', conflicts)
+  }
+}
+
+/** Throttled bridge from engine progress callbacks to renderer IPC events. */
+function createProgressReporter(): SyncProgressCallback {
+  let lastPhase: string | null = null
+  let lastDatabase: string | null = null
+  let sinceLastSend = 0
+  return (progress: SyncProgress): void => {
+    sinceLastSend++
+    const boundary =
+      progress.phase !== lastPhase ||
+      progress.database !== lastDatabase ||
+      progress.current === progress.total
+    if (!boundary && sinceLastSend < PROGRESS_THROTTLE_DOCS) return
+    lastPhase = progress.phase
+    lastDatabase = progress.database
+    sinceLastSend = 0
+    ipcManager.send('db:sync-progress', progress)
+  }
+}
+
+async function writeWebdavStatus(
+  attemptAt: string,
+  result: SyncResult | null,
+  error?: unknown
+): Promise<void> {
+  try {
+    const previous = await ConfigDBManager.getConfigLocalValue('sync.webdavStatus')
+    const finishedAt = new Date().toISOString()
+    let lastResult: configLocalDocs['sync']['webdavStatus']['lastResult']
+    let lastError = ''
+    if (result) {
+      if (result.errors.length > 0) {
+        lastResult = 'error'
+        lastError = result.errors.slice(0, 3).join('; ')
+      } else if (result.conflicts.length > 0) {
+        lastResult = 'conflict'
+      } else {
+        lastResult = 'success'
+      }
+    } else {
+      lastResult = 'error'
+      lastError = error instanceof Error ? error.message : String(error)
+    }
+    await ConfigDBManager.setConfigLocalValue('sync.webdavStatus', {
+      lastAttemptAt: attemptAt,
+      lastSuccessAt: lastResult === 'success' ? finishedAt : (previous?.lastSuccessAt ?? ''),
+      lastResult,
+      lastError,
+      lastConflictCount: result?.conflicts.length ?? 0
+    })
+  } catch (statusError) {
+    log.warn('[WebDAV] Failed to persist sync status:', statusError)
+  }
+}
 
 /**
  * Test WebDAV connection by attempting to list the root directory.
@@ -42,9 +126,7 @@ export async function testWebDAVConnection(
 /**
  * Get remote snapshot metadata.
  */
-export async function getRemoteSnapshotInfo(
-  config: WebDAVConfig
-): Promise<{
+export async function getRemoteSnapshotInfo(config: WebDAVConfig): Promise<{
   exists: boolean
   lastModified?: string
   size?: number
@@ -82,7 +164,8 @@ export async function getRemoteSnapshotInfo(
  */
 export async function syncViaWebDAV(
   config: WebDAVConfig,
-  direction: 'upload' | 'download' | 'auto'
+  direction: 'upload' | 'download' | 'auto',
+  options: WebDAVSyncOptions = {}
 ): Promise<SyncResult> {
   if (!config.url || !config.auth.username) {
     throw new Error('Incomplete WebDAV config')
@@ -90,29 +173,48 @@ export async function syncViaWebDAV(
 
   const adapter = new WebDAVAdapter(config)
   const remotePath = config.remotePath || '/vnite-sync/'
+  const onProgress = options.silent ? undefined : createProgressReporter()
+  const attemptAt = new Date().toISOString()
 
   let result: SyncResult
 
-  if (direction === 'upload') {
-    log.info('[WebDAV] Starting incremental upload...')
-    result = await uploadSnapshot(adapter, remotePath)
-    log.info(
-      `[WebDAV] Upload complete: ${result.uploaded} docs, ${result.attachmentsUploaded} attachments, ${result.conflicts.length} conflicts`
-    )
-  } else if (direction === 'download') {
-    log.info('[WebDAV] Starting incremental download...')
-    result = await downloadSnapshot(adapter, remotePath)
-    log.info(
-      `[WebDAV] Download complete: ${result.downloaded} docs, ${result.attachmentsDownloaded} attachments, ${result.conflicts.length} conflicts`
-    )
-  } else {
-    // auto: bidirectional sync
-    log.info('[WebDAV] Starting bidirectional sync...')
-    result = await syncBidirectional(adapter, remotePath)
-    log.info(
-      `[WebDAV] Bidirectional sync complete: +${result.uploaded}/-${result.downloaded} docs, ${result.conflicts.length} conflicts`
-    )
+  try {
+    if (direction === 'upload') {
+      log.info('[WebDAV] Starting incremental upload...')
+      result = await uploadSnapshot(adapter, remotePath, onProgress)
+      log.info(
+        `[WebDAV] Upload complete: ${result.uploaded} docs, ${result.attachmentsUploaded} attachments, ${result.conflicts.length} conflicts`
+      )
+    } else if (direction === 'download') {
+      log.info('[WebDAV] Starting incremental download...')
+      result = await downloadSnapshot(adapter, remotePath, onProgress)
+      log.info(
+        `[WebDAV] Download complete: ${result.downloaded} docs, ${result.attachmentsDownloaded} attachments, ${result.conflicts.length} conflicts`
+      )
+    } else {
+      // auto: bidirectional sync
+      log.info('[WebDAV] Starting bidirectional sync...')
+      result = await syncBidirectional(adapter, remotePath, onProgress)
+      log.info(
+        `[WebDAV] Bidirectional sync complete: +${result.uploaded}/-${result.downloaded} docs, ${result.conflicts.length} conflicts`
+      )
+    }
+  } catch (error) {
+    // A concurrent sync holds the mutex — nothing actually ran, so leave
+    // status and conflict list untouched.
+    if (error instanceof Error && error.message === 'Sync already in progress') {
+      throw error
+    }
+    await writeWebdavStatus(attemptAt, null, error)
+    throw error
   }
+
+  try {
+    await recordSyncConflicts(result.conflicts)
+  } catch (conflictError) {
+    log.warn('[WebDAV] Failed to persist conflict list:', conflictError)
+  }
+  await writeWebdavStatus(attemptAt, result)
 
   return result
 }

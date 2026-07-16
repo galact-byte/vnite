@@ -15,13 +15,31 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '~/components/ui/dropdown-menu'
-import { User, LogOut, HardDrive, Cloud, Key, InfoIcon, FolderSync, Upload, Download, Server, AlertTriangle, Clock } from 'lucide-react'
+import {
+  User,
+  LogOut,
+  HardDrive,
+  Cloud,
+  Key,
+  InfoIcon,
+  FolderSync,
+  Upload,
+  Download,
+  Server,
+  AlertTriangle,
+  Clock,
+  ChevronDown,
+  CheckCircle2,
+  XCircle
+} from 'lucide-react'
 import { Link } from '~/components/ui/link'
 import { useTranslation } from 'react-i18next'
 import { useCloudSyncStore } from './store'
 import { ROLE_QUOTAS } from '@appTypes/sync'
 import { ConfigItem, ConfigItemPure } from '~/components/form'
 import { Switch } from '~/components/ui/switch'
+import { Badge } from '~/components/ui/badge'
+import { useGameRegistry } from '~/stores/game'
 import { Trans } from 'react-i18next'
 
 export function CloudSync(): React.JSX.Element {
@@ -48,23 +66,55 @@ export function CloudSync(): React.JSX.Element {
   const [userRole, setUserRole] = useConfigLocalState('userInfo.role')
   const [userEmail, setUserEmail] = useConfigLocalState('userInfo.email')
 
-  const [webdavUrl, setWebdavUrl, saveWebdavUrl] = useConfigLocalState('sync.webdavConfig.url', true)
-  const [webdavRemotePath, setWebdavRemotePath, saveWebdavRemotePath] = useConfigLocalState('sync.webdavConfig.remotePath', true)
-  const [webdavUsername, setWebdavUsername, saveWebdavUsername] = useConfigLocalState('sync.webdavConfig.auth.username', true)
-  const [webdavPassword, setWebdavPassword, saveWebdavPassword] = useConfigLocalState('sync.webdavConfig.auth.password', true)
+  const [webdavUrl, setWebdavUrl, saveWebdavUrl] = useConfigLocalState(
+    'sync.webdavConfig.url',
+    true
+  )
+  const [webdavRemotePath, setWebdavRemotePath, saveWebdavRemotePath] = useConfigLocalState(
+    'sync.webdavConfig.remotePath',
+    true
+  )
+  const [webdavUsername, setWebdavUsername, saveWebdavUsername] = useConfigLocalState(
+    'sync.webdavConfig.auth.username',
+    true
+  )
+  const [webdavPassword, setWebdavPassword, saveWebdavPassword] = useConfigLocalState(
+    'sync.webdavConfig.auth.password',
+    true
+  )
   const [webdavAutoSync, setWebdavAutoSync] = useConfigLocalState('sync.webdavConfig.autoSync')
-  const [webdavAutoSyncInterval, setWebdavAutoSyncInterval] = useConfigLocalState('sync.webdavConfig.autoSyncInterval')
+  const [webdavAutoSyncInterval, setWebdavAutoSyncInterval] = useConfigLocalState(
+    'sync.webdavConfig.autoSyncInterval'
+  )
 
-  const [webdavRemoteInfo, setWebdavRemoteInfo] = useState<{exists: boolean, lastModified?: string, size?: number} | null>(null)
-  const [webdavConflicts, setWebdavConflicts] = useState<Array<{docId: string, dbName: string}>>([])
+  const [webdavRemoteInfo, setWebdavRemoteInfo] = useState<{
+    exists: boolean
+    lastModified?: string
+    size?: number
+  } | null>(null)
+  const [webdavConflicts, setWebdavConflicts] = useConfigLocalState('webdav-sync-conflicts.items')
+  const [conflictsExpanded, setConflictsExpanded] = useState(false)
+  const [webdavStatus] = useConfigLocalState('sync.webdavStatus')
+  const [syncProgress, setSyncProgress] = useState<{
+    phase: 'download' | 'upload'
+    database: string
+    current: number
+    total: number
+  } | null>(null)
+  const [manualSyncing, setManualSyncing] = useState(false)
+  const gameMetaIndex = useGameRegistry((state) => state.gameMetaIndex)
 
-  const [syncSpacePath, setSyncSpacePath, saveSyncSpacePath, setSyncSpacePathAndSave] = useConfigLocalState('sync.syncSpacePath', true)
+  const [syncSpacePath, setSyncSpacePath, saveSyncSpacePath, setSyncSpacePathAndSave] =
+    useConfigLocalState('sync.syncSpacePath', true)
 
   useEffect(() => {
     if (enabled && syncMode === 'webdav' && webdavUrl && webdavUsername) {
-      ipcManager.invoke('db:get-webdav-remote-info').then(info => {
-        setWebdavRemoteInfo(info)
-      }).catch(console.error)
+      ipcManager
+        .invoke('db:get-webdav-remote-info')
+        .then((info) => {
+          setWebdavRemoteInfo(info)
+        })
+        .catch(console.error)
     }
   }, [enabled, syncMode, webdavUrl, webdavUsername])
 
@@ -108,16 +158,21 @@ export function CloudSync(): React.JSX.Element {
       toast.error(`${t('cloudSync.notifications.authError')}, ${message}`)
     })
 
-    // Listen for sync conflicts
+    // Listen for sync conflicts (persisted list itself arrives via config-local store)
     const removeConflictListener = ipcManager.on('db:sync-conflicts', (_event, conflicts) => {
-      setWebdavConflicts(conflicts)
       if (conflicts.length > 0) {
         toast.warning(t('cloudSync.webdav.conflictsDetected', { count: conflicts.length }))
       }
     })
 
+    // Live sync progress (only rendered while a manual sync is running)
+    const removeProgressListener = ipcManager.on('db:sync-progress', (_event, progress) => {
+      setSyncProgress(progress)
+    })
+
     return () => {
       removeConflictListener()
+      removeProgressListener()
     }
   }, [])
 
@@ -147,6 +202,19 @@ export function CloudSync(): React.JSX.Element {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
   }
 
+  const validateWebdavConfig = (): boolean => {
+    if (syncMode !== 'webdav') return true
+    if (!webdavUrl) {
+      toast.error(t('cloudSync.webdav.validation.urlRequired'))
+      return false
+    }
+    if (!/^https?:\/\//.test(webdavUrl)) {
+      toast.error(t('cloudSync.webdav.validation.urlInvalid'))
+      return false
+    }
+    return true
+  }
+
   const updateCloudSyncConfig = async (): Promise<void> => {
     if (enabled) {
       if (
@@ -159,6 +227,10 @@ export function CloudSync(): React.JSX.Element {
 
       if (syncMode === 'official' && !userName) {
         toast.error(t('cloudSync.errors.loginRequired'))
+        return
+      }
+
+      if (!validateWebdavConfig()) {
         return
       }
     }
@@ -175,30 +247,37 @@ export function CloudSync(): React.JSX.Element {
     )
   }
 
-  const testWebdav = async () => {
-    toast.promise(
-      ipcManager.invoke('db:test-webdav-connection'),
-      {
-        loading: t('cloudSync.webdav.testing'),
-        success: (res: any) => res.success ? t(res.message) : (() => { throw new Error(t(res.message)) })(),
-        error: (err: any) => t('cloudSync.webdav.testFailed') + ': ' + err.message
-      }
-    )
+  const testWebdav = async (): Promise<void> => {
+    toast.promise(ipcManager.invoke('db:test-webdav-connection'), {
+      loading: t('cloudSync.webdav.testing'),
+      success: (res: any) =>
+        res.success
+          ? t(res.message)
+          : (() => {
+              throw new Error(t(res.message))
+            })(),
+      error: (err: any) => t('cloudSync.webdav.testFailed') + ': ' + err.message
+    })
   }
 
-  const syncWebdav = async (direction: 'upload' | 'download' | 'auto') => {
+  const syncWebdav = async (direction: 'upload' | 'download' | 'auto'): Promise<void> => {
+    if (!validateWebdavConfig()) return
+    setManualSyncing(true)
+    setSyncProgress(null)
     toast.promise(
-      ipcManager.invoke('db:webdav-sync', direction).then((result: any) => {
-        // Refresh remote info after sync
-        ipcManager.invoke('db:get-webdav-remote-info').then(info => {
-          setWebdavRemoteInfo(info)
+      ipcManager
+        .invoke('db:webdav-sync', direction)
+        .then(() => {
+          // Refresh remote info after sync; conflict toast + list arrive via
+          // the 'db:sync-conflicts' event and the config-local store.
+          ipcManager.invoke('db:get-webdav-remote-info').then((info) => {
+            setWebdavRemoteInfo(info)
+          })
         })
-        // Show conflict warning if any
-        if (result?.conflicts?.length > 0) {
-          setWebdavConflicts(result.conflicts)
-          toast.warning(t('cloudSync.webdav.conflictsDetected', { count: result.conflicts.length }))
-        }
-      }),
+        .finally(() => {
+          setManualSyncing(false)
+          setSyncProgress(null)
+        }),
       {
         loading: t('cloudSync.webdav.syncing'),
         success: t('cloudSync.webdav.syncSuccess'),
@@ -269,7 +348,12 @@ export function CloudSync(): React.JSX.Element {
   }
 
   const selectSyncSpacePath = async (): Promise<void> => {
-    const folderPath = await ipcManager.invoke('system:select-path-dialog', ['openDirectory'], undefined, syncSpacePath)
+    const folderPath = await ipcManager.invoke(
+      'system:select-path-dialog',
+      ['openDirectory'],
+      undefined,
+      syncSpacePath
+    )
     if (folderPath) {
       await setSyncSpacePathAndSave(folderPath)
     }
@@ -656,7 +740,7 @@ export function CloudSync(): React.JSX.Element {
                           placeholder="••••••••"
                         />
                       </div>
-                      
+
                       <div className="col-span-2 pt-2 flex flex-row gap-2">
                         <Button variant="outline" onClick={testWebdav}>
                           {t('cloudSync.webdav.testConnection')}
@@ -682,10 +766,7 @@ export function CloudSync(): React.JSX.Element {
                             <Clock className="w-4 h-4" />
                             <span className="text-sm">{t('cloudSync.webdav.autoSync')}</span>
                           </div>
-                          <Switch
-                            checked={webdavAutoSync}
-                            onCheckedChange={setWebdavAutoSync}
-                          />
+                          <Switch checked={webdavAutoSync} onCheckedChange={setWebdavAutoSync} />
                         </div>
                         {webdavAutoSync && (
                           <div className="flex flex-row items-center gap-3 mt-3">
@@ -712,14 +793,76 @@ export function CloudSync(): React.JSX.Element {
                         )}
                       </div>
 
-                      {/* Conflict warnings */}
+                      {/* Sync progress (manual sync only) */}
+                      {manualSyncing && syncProgress && (
+                        <div className="col-span-2 pt-2">
+                          <div className="flex items-center gap-2 p-2 text-xs rounded-md text-muted-foreground bg-muted/40">
+                            <span className="inline-block w-2 h-2 rounded-lg bg-accent animate-pulse"></span>
+                            <span>
+                              {t(`cloudSync.webdav.progress.${syncProgress.phase}`, {
+                                database: syncProgress.database,
+                                current: syncProgress.current,
+                                total: syncProgress.total
+                              })}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Conflict list */}
                       {webdavConflicts.length > 0 && (
                         <div className="col-span-2 pt-2">
-                          <div className="flex items-center gap-2 p-3 text-sm border rounded-md bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800">
-                            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                            <span>
-                              {t('cloudSync.webdav.conflictsWarning', { count: webdavConflicts.length })}
-                            </span>
+                          <div className="flex flex-col p-3 text-sm border rounded-md bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800">
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                              <button
+                                type="button"
+                                className="flex items-center flex-1 gap-1 text-left"
+                                onClick={() => setConflictsExpanded((prev) => !prev)}
+                              >
+                                <span>
+                                  {t('cloudSync.webdav.conflicts.title', {
+                                    count: webdavConflicts.length
+                                  })}
+                                </span>
+                                <ChevronDown
+                                  className={cn(
+                                    'w-4 h-4 transition-transform',
+                                    conflictsExpanded && 'rotate-180'
+                                  )}
+                                />
+                              </button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setWebdavConflicts([])}
+                              >
+                                {t('cloudSync.webdav.conflicts.clear')}
+                              </Button>
+                            </div>
+                            {conflictsExpanded && (
+                              <div className="flex flex-col gap-1 mt-2 border-t border-amber-200 dark:border-amber-800 pt-2">
+                                {webdavConflicts.map((conflict) => (
+                                  <div
+                                    key={`${conflict.dbName}/${conflict.docId}`}
+                                    className="flex items-center gap-2 text-xs"
+                                  >
+                                    <Badge variant="outline">{conflict.dbName}</Badge>
+                                    <span className="flex-1 truncate">
+                                      {(conflict.dbName === 'game' &&
+                                        gameMetaIndex[conflict.docId]?.name) ||
+                                        conflict.docId}
+                                    </span>
+                                    <span className="text-muted-foreground whitespace-nowrap">
+                                      {t('cloudSync.webdav.conflicts.detectedAt')}{' '}
+                                      {t('{{date, niceDateSeconds}}', {
+                                        date: conflict.detectedAt
+                                      })}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}
@@ -733,11 +876,62 @@ export function CloudSync(): React.JSX.Element {
                           <p>{t('cloudSync.webdav.loadingInfo')}</p>
                         ) : webdavRemoteInfo.exists ? (
                           <div className="flex flex-col gap-1">
-                            <p>{t('cloudSync.webdav.lastModified')}: {new Date(webdavRemoteInfo.lastModified || '').toLocaleString()}</p>
-                            <p>{t('cloudSync.webdav.size')}: {formatStorage(webdavRemoteInfo.size || 0)}</p>
+                            <p>
+                              {t('cloudSync.webdav.lastModified')}:{' '}
+                              {new Date(webdavRemoteInfo.lastModified || '').toLocaleString()}
+                            </p>
+                            <p>
+                              {t('cloudSync.webdav.size')}:{' '}
+                              {formatStorage(webdavRemoteInfo.size || 0)}
+                            </p>
                           </div>
                         ) : (
                           <p>{t('cloudSync.webdav.noRemoteSnapshot')}</p>
+                        )}
+
+                        {/* Local sync status (persisted on this device) */}
+                        <p className="flex items-center gap-1 mt-3 mb-2 font-medium">
+                          <InfoIcon className="w-3.5 h-3.5" />
+                          <span>{t('cloudSync.webdav.status.title')}</span>
+                        </p>
+                        {webdavStatus?.lastAttemptAt ? (
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span>
+                                {t('cloudSync.webdav.status.lastSync')}:{' '}
+                                {t('{{date, niceDateSeconds}}', {
+                                  date: webdavStatus.lastAttemptAt
+                                })}
+                              </span>
+                              {webdavStatus.lastResult === 'success' && (
+                                <Badge variant="outline" className="gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-primary" />
+                                  {t('cloudSync.webdav.status.success')}
+                                </Badge>
+                              )}
+                              {webdavStatus.lastResult === 'conflict' && (
+                                <Badge variant="outline" className="gap-1">
+                                  <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                  {t('cloudSync.webdav.status.conflict', {
+                                    count: webdavStatus.lastConflictCount
+                                  })}
+                                </Badge>
+                              )}
+                              {webdavStatus.lastResult === 'error' && (
+                                <Badge variant="outline" className="gap-1">
+                                  <XCircle className="w-3 h-3 text-destructive" />
+                                  {t('cloudSync.webdav.status.error')}
+                                </Badge>
+                              )}
+                            </div>
+                            {webdavStatus.lastResult === 'error' && webdavStatus.lastError && (
+                              <p className="text-destructive truncate">
+                                {webdavStatus.lastError.slice(0, 120)}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <p>{t('cloudSync.webdav.status.never')}</p>
                         )}
                       </div>
                     </div>
@@ -765,9 +959,7 @@ export function CloudSync(): React.JSX.Element {
         </CardHeader>
         <CardContent>
           <div className={cn('space-y-4 text-sm')}>
-            <div className="text-muted-foreground mb-4">
-              {t('cloudSync.syncSpace.description')}
-            </div>
+            <div className="text-muted-foreground mb-4">{t('cloudSync.syncSpace.description')}</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-4 items-center">
               <div className="flex items-center gap-2 select-none whitespace-nowrap">
                 <FolderSync className="w-4 h-4" />
@@ -781,10 +973,17 @@ export function CloudSync(): React.JSX.Element {
                   onBlur={saveSyncSpacePath}
                   placeholder="D:\OneDrive\VniteSaves"
                 />
-                <Button variant={'outline'} size={'icon'} onClick={selectSyncSpacePath}>
+                <Button
+                  variant={'outline'}
+                  size={'icon'}
+                  title={t('cloudSync.syncSpace.browse')}
+                  onClick={selectSyncSpacePath}
+                >
                   <span className={cn('icon-[mdi--folder-outline] w-5 h-5')}></span>
                 </Button>
               </div>
+              <div></div>
+              <p className="text-sm text-muted-foreground">{t('cloudSync.syncSpace.hint')}</p>
             </div>
           </div>
         </CardContent>

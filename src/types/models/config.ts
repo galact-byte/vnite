@@ -290,6 +290,13 @@ export interface configLocalDocs {
       autoSync: boolean
       autoSyncInterval: number
     }
+    webdavStatus: {
+      lastAttemptAt: string
+      lastSuccessAt: string
+      lastResult: '' | 'success' | 'conflict' | 'error'
+      lastError: string
+      lastConflictCount: number
+    }
     syncSpacePath: string
   }
   hotkeys: {
@@ -352,6 +359,10 @@ export interface configLocalDocs {
       port: number
       bypassRules: string
     }
+  }
+  'webdav-sync-conflicts': {
+    items: Array<{ dbName: string; docId: string; detectedAt: string }>
+    updatedAt: string
   }
 }
 
@@ -575,6 +586,13 @@ export const DEFAULT_CONFIG_LOCAL_VALUES: Readonly<configLocalDocs> = {
       autoSync: false,
       autoSyncInterval: 30
     },
+    webdavStatus: {
+      lastAttemptAt: '',
+      lastSuccessAt: '',
+      lastResult: '',
+      lastError: '',
+      lastConflictCount: 0
+    },
     syncSpacePath: ''
   },
   hotkeys: {
@@ -625,5 +643,9 @@ export const DEFAULT_CONFIG_LOCAL_VALUES: Readonly<configLocalDocs> = {
       port: 0,
       bypassRules: '<local>,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fd00::/8'
     }
+  },
+  'webdav-sync-conflicts': {
+    items: [],
+    updatedAt: ''
   }
 } as const
