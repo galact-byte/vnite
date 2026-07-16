@@ -174,7 +174,11 @@ type MainIpcEvents =
         attachmentsUploaded: number
         attachmentsDownloaded: number
       }
-      'db:get-webdav-remote-info': () => { exists: boolean; lastModified?: string; size?: number } | null
+      'db:get-webdav-remote-info': () => {
+        exists: boolean
+        lastModified?: string
+        size?: number
+      } | null
 
       // Game save management events
       'game:search-save-paths': (gameId: string) => string[]
@@ -398,8 +402,9 @@ type RendererIpcEvents = {
   'db:sync-status': [
     { status: 'syncing' | 'success' | 'error'; message: string; timestamp: string }
   ]
-  'db:sync-conflicts': [
-    Array<{ docId: string; dbName: string }>
+  'db:sync-conflicts': [Array<{ docId: string; dbName: string }>]
+  'db:sync-progress': [
+    { phase: 'download' | 'upload'; database: string; current: number; total: number }
   ]
   'db:full-sync-error': [error: string]
   'db:full-synced': []

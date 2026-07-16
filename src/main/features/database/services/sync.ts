@@ -101,34 +101,33 @@ export async function startSync(): Promise<void> {
         timestamp: new Date().toISOString()
       })
 
-      try {
-        const result = await syncViaWebDAV(syncConfig.webdavConfig, 'auto')
+      // Startup sync runs in the background — no progress UI. Conflict
+      // persistence + notification happen inside syncViaWebDAV.
+      await syncViaWebDAV(syncConfig.webdavConfig, 'auto', { silent: true })
 
-        // Notify about conflicts if any
-        if (result.conflicts.length > 0) {
-          ipcManager.send('db:sync-conflicts', result.conflicts)
-        }
-
-        // Setup auto-sync interval
-        if (syncConfig.webdavConfig.autoSync) {
-          if (webdavSyncInterval) clearInterval(webdavSyncInterval)
-          const intervalMs = Math.max(
-            1,
-            syncConfig.webdavConfig.autoSyncInterval || 30
-          ) * 60 * 1000
-          webdavSyncInterval = setInterval(() => {
-            syncViaWebDAV(syncConfig.webdavConfig, 'auto').catch((err) => {
+      // Setup auto-sync interval
+      if (syncConfig.webdavConfig.autoSync) {
+        if (webdavSyncInterval) clearInterval(webdavSyncInterval)
+        const intervalMs = Math.max(1, syncConfig.webdavConfig.autoSyncInterval || 30) * 60 * 1000
+        webdavSyncInterval = setInterval(async () => {
+          try {
+            // Re-read the config on every firing so changes take effect
+            // without requiring a restart
+            const webdavConfig = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
+            await syncViaWebDAV(webdavConfig, 'auto', { silent: true })
+          } catch (err) {
+            if (err instanceof Error && err.message === 'Sync already in progress') {
+              log.info('[Sync] WebDAV auto sync skipped: sync already in progress')
+            } else {
               log.error('[Sync] WebDAV auto sync error:', err)
-            })
-          }, intervalMs)
-        } else {
-          if (webdavSyncInterval) {
-            clearInterval(webdavSyncInterval)
-            webdavSyncInterval = null
+            }
           }
+        }, intervalMs)
+      } else {
+        if (webdavSyncInterval) {
+          clearInterval(webdavSyncInterval)
+          webdavSyncInterval = null
         }
-      } catch (err) {
-        throw err
       }
     }
 
@@ -243,11 +242,10 @@ export async function fullSync(): Promise<void> {
         return
       }
 
-      const result = await syncViaWebDAV(syncConfig.webdavConfig, 'upload')
-
-      if (result.conflicts.length > 0) {
-        ipcManager.send('db:sync-conflicts', result.conflicts)
-      }
+      const result = await syncViaWebDAV(syncConfig.webdavConfig, 'auto')
+      log.info(
+        `[Sync] WebDAV full sync finished with ${result.conflicts.length} conflicts and ${result.errors.length} errors`
+      )
     }
 
     ipcManager.send('db:sync-status', {
@@ -275,5 +273,40 @@ export function stopSync(): void {
   if (webdavSyncInterval) {
     clearInterval(webdavSyncInterval)
     webdavSyncInterval = null
+  }
+}
+
+const QUIT_SYNC_TIMEOUT_MS = 30 * 1000
+
+/**
+ * One best-effort upload sync during app quit (webdav mode + autoSync only).
+ * Never throws and never blocks quit for more than 30s; failures and
+ * mutex rejections are logged and the quit proceeds.
+ */
+export async function syncBeforeQuit(): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    const syncConfig = await ConfigDBManager.getConfigLocalValue('sync')
+    if (!syncConfig.enabled || syncConfig.mode !== 'webdav' || !syncConfig.webdavConfig.autoSync) {
+      return
+    }
+
+    log.info('[Sync] Running WebDAV upload sync before quit...')
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Quit sync timed out')), QUIT_SYNC_TIMEOUT_MS)
+    })
+    await Promise.race([
+      syncViaWebDAV(syncConfig.webdavConfig, 'upload', { silent: true }),
+      timeout
+    ])
+    log.info('[Sync] WebDAV quit sync finished')
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Sync already in progress') {
+      log.info('[Sync] WebDAV quit sync skipped: sync already in progress')
+    } else {
+      log.warn('[Sync] WebDAV quit sync failed:', error)
+    }
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }

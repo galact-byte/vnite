@@ -393,12 +393,35 @@
       "syncSuccess": "Sync Successful",
       "syncFailed": "Sync Failed",
       "conflictsDetected": "{{count}} sync conflict(s) detected, please resolve manually",
-      "conflictsWarning": "{{count}} sync conflict(s) exist. Please resolve in conflict manager before syncing again."
+      "conflictsWarning": "{{count}} sync conflict(s) exist. Please resolve in conflict manager before syncing again.",
+      "progress": {
+        "download": "Downloading {{database}} ({{current}}/{{total}})",
+        "upload": "Uploading {{database}} ({{current}}/{{total}})"
+      },
+      "conflicts": {
+        "title": "{{count}} sync conflict(s)",
+        "clear": "Dismiss",
+        "detectedAt": "Detected at"
+      },
+      "status": {
+        "title": "Local Sync Status",
+        "lastSync": "Last sync",
+        "success": "Success",
+        "conflict": "{{count}} conflict(s)",
+        "error": "Failed",
+        "never": "No sync has run on this device yet"
+      },
+      "validation": {
+        "urlRequired": "Please enter the WebDAV server URL first",
+        "urlInvalid": "WebDAV server URL must start with http:// or https://"
+      }
     },
     "syncSpace": {
       "title": "Sync Space",
       "description": "Configure the local sync space path. When you convert a save path to cloud in game properties, the app will move the save folder here and create a junction link (no double space used). Use this with cloud drives (OneDrive, etc.) for seamless syncing.",
-      "path": "Sync Space Path"
+      "path": "Sync Space Path",
+      "browse": "Browse…",
+      "hint": "Make sure this folder is inside the sync scope of your cloud drive client (OneDrive, etc.), otherwise saves will not be synced."
     },
     "info": {
       "status": "Status",
