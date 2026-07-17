@@ -170,6 +170,8 @@
     },
     "memory": {
       "title": "Memory",
+      "gridColumnWidth": "Card Column Width",
+      "gridColumnWidthDescription": "Automatically calculate the card view column count from the available width and this pixel value",
       "masonryColumnWidth": "Gallery Column Width",
       "masonryColumnWidthDescription": "Automatically calculate the gallery column count from the available width and this pixel value"
     },
@@ -180,7 +182,9 @@
       "showNSFWBlurSwitcher": "Show NSFW Content Switcher",
       "showNSFWBlurSwitcherDescription": "Show NSFW blur toggle in sidebar",
       "showLocalGameFilterSwitcher": "Show Local Game Filter",
-      "showLocalGameFilterSwitcherDescription": "Show local game filter button in titlebar"
+      "showLocalGameFilterSwitcherDescription": "Show local game filter button in titlebar",
+      "showToolbox": "Show Toolbox",
+      "showToolboxDescription": "Show toolbox button in sidebar"
     },
     "customVisibilityFilter": {
       "title": "Custom Visibility Filter",
@@ -260,6 +264,24 @@
         "testing": "Testing upscaler availability…",
         "testSuccess": "Upscaler test passed",
         "testError": "Upscaler test failed: {{message}}"
+      }
+    },
+    "toolbox": {
+      "title": "Toolbox",
+      "path": "Path",
+      "args": "Arguments",
+      "workingDirectory": "Working Directory",
+      "namePlaceholder": "Tool name",
+      "pathPlaceholder": "Path to executable",
+      "argsPlaceholder": "Optional startup arguments for the program",
+      "workingDirectoryPlaceholder": "Default: executable directory",
+      "browse": "Browse",
+      "newTool": "New Tool",
+      "selectTool": "Select a tool to configure",
+      "notifications": {
+        "iconPathRequired": "Enter an executable path first",
+        "extractIconFailed": "Failed to extract the program icon: {{message}}",
+        "removeToolFailed": "Failed to remove the tool: {{message}}"
       }
     }
   },
@@ -557,6 +579,10 @@
     "saveToClipboard": {
       "title": "Save to Clipboard",
       "description": "Automatically copy the captured image to the clipboard after taking a screenshot"
+    },
+    "autoFillNoteFromFilename": {
+      "title": "Use Cover Filename as Content",
+      "description": "When selecting a cover for a memory with empty content, automatically fill it with the image filename without its extension"
     },
     "saveDir": {
       "title": "Save Directory",
