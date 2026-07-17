@@ -39,21 +39,30 @@ export interface PathHandle {
   save: () => Promise<void>
 }
 
-function SavePathSyncStatus({ gameId, savePath }: { gameId: string, savePath: string }) {
+function SavePathSyncStatus({
+  gameId,
+  savePath
+}: {
+  gameId: string
+  savePath: string
+}): React.JSX.Element | null {
   const { t } = useTranslation('game')
   const [isCloud, setIsCloud] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
 
   const checkStatus = useCallback(() => {
-    ipcManager.invoke('game:check-save-in-sync-space', gameId, savePath).then(setIsCloud).catch(() => setIsCloud(false))
+    ipcManager
+      .invoke('game:check-save-in-sync-space', gameId, savePath)
+      .then(setIsCloud)
+      .catch(() => setIsCloud(false))
   }, [gameId, savePath])
 
   useEffect(() => {
     checkStatus()
   }, [checkStatus])
 
-  const confirmConvert = () => {
+  const confirmConvert = (): void => {
     setShowConfirm(false)
     setLoading(true)
     const p = ipcManager.invoke('game:convert-save-to-sync-space', gameId, savePath)
@@ -71,11 +80,11 @@ function SavePathSyncStatus({ gameId, savePath }: { gameId: string, savePath: st
     p.finally(() => setLoading(false))
   }
 
-  const handleConvert = () => {
+  const handleConvert = (): void => {
     setShowConfirm(true)
   }
 
-  const handleRestore = () => {
+  const handleRestore = (): void => {
     setLoading(true)
     const p = ipcManager.invoke('game:restore-save-from-sync-space', gameId, savePath)
     toast.promise(p, {
@@ -99,10 +108,20 @@ function SavePathSyncStatus({ gameId, savePath }: { gameId: string, savePath: st
       <div className="flex flex-row items-center justify-between p-2 mt-2 border rounded-md text-sm bg-muted/20">
         <div className="flex flex-col gap-1 overflow-hidden pr-2">
           <div className="flex items-center gap-2">
-            {isCloud ? <Cloud className="w-4 h-4 text-primary" /> : <HardDrive className="w-4 h-4 text-muted-foreground" />}
-            <span className="font-medium">{isCloud ? t('detail.properties.path.syncSpace.cloudStatus') : t('detail.properties.path.syncSpace.localStatus')}</span>
+            {isCloud ? (
+              <Cloud className="w-4 h-4 text-primary" />
+            ) : (
+              <HardDrive className="w-4 h-4 text-muted-foreground" />
+            )}
+            <span className="font-medium">
+              {isCloud
+                ? t('detail.properties.path.syncSpace.cloudStatus')
+                : t('detail.properties.path.syncSpace.localStatus')}
+            </span>
           </div>
-          <div className="text-xs text-muted-foreground truncate" title={savePath}>{savePath}</div>
+          <div className="text-xs text-muted-foreground truncate" title={savePath}>
+            {savePath}
+          </div>
         </div>
         <div>
           {isCloud ? (
@@ -121,14 +140,18 @@ function SavePathSyncStatus({ gameId, savePath }: { gameId: string, savePath: st
       <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t('detail.properties.path.syncSpace.convertConfirmTitle')}</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t('detail.properties.path.syncSpace.convertConfirmTitle')}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               {t('detail.properties.path.syncSpace.convertConfirmDesc')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('utils:common.cancel')}</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmConvert}>{t('utils:common.confirm')}</AlertDialogAction>
+            <AlertDialogAction onClick={confirmConvert}>
+              {t('utils:common.confirm')}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -455,10 +478,10 @@ function PathComponent(
                 </Tooltip>
               </div>
             </div>
-            
+
             {savePaths.filter(Boolean).length > 0 && (
-              <div className="col-span-2 col-start-2 -mt-3 flex flex-col gap-1">
-                {savePaths.filter(Boolean).map(savePath => (
+              <div className="col-start-2 -mt-3 flex flex-col gap-1">
+                {savePaths.filter(Boolean).map((savePath) => (
                   <SavePathSyncStatus key={savePath} savePath={savePath} gameId={gameId} />
                 ))}
               </div>

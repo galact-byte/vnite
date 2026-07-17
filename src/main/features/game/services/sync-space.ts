@@ -1,8 +1,13 @@
 import log from 'electron-log/main'
 import fse from 'fs-extra'
 import path from 'path'
-import { ConfigDBManager } from '~/core/database'
+import { ConfigDBManager, GameDBManager } from '~/core/database'
 import fs from 'fs'
+
+/** Folder inside the sync space that holds all game save entries (new structure). */
+const SYNC_SAVES_DIR = 'Vnitesaves'
+/** Marker file written into each game directory to record which game owns it. */
+const GAME_ID_MARKER_FILE = '.vnite-game-id'
 
 async function getSyncSpacePath(): Promise<string> {
   const syncSpacePath = await ConfigDBManager.getConfigLocalValue('sync.syncSpacePath')
@@ -73,29 +78,116 @@ export async function checkSaveInSyncSpace(_gameId: string, savePath: string): P
 }
 
 /**
+ * Strip characters that are invalid in Windows directory names, plus
+ * trailing dots/spaces (which Windows silently rejects). Legal Unicode
+ * (e.g. Japanese) is preserved. Returns '' when nothing usable remains.
+ */
+function sanitizeGameDirName(name: string): string {
+  return (
+    name
+      // eslint-disable-next-line no-control-regex
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+      .replace(/[. ]+$/, '')
+      .trim()
+  )
+}
+
+async function readGameIdMarker(gameDirPath: string): Promise<string | null> {
+  try {
+    const content = await fse.readFile(path.join(gameDirPath, GAME_ID_MARKER_FILE), 'utf8')
+    return content.trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Decide which directory under `Vnitesaves/` this game's saves belong to.
+ * Prefers the sanitized game name for readability; falls back to the gameId
+ * when the name is empty after sanitization, or when the name directory is
+ * already owned by a different game (ownership tracked via the
+ * `.vnite-game-id` marker file inside the directory).
+ */
+async function resolveGameSyncDir(syncSpacePath: string, gameId: string): Promise<string> {
+  const savesRoot = path.join(syncSpacePath, SYNC_SAVES_DIR)
+
+  let gameName = ''
+  try {
+    gameName = (await GameDBManager.getGameValue(gameId, 'metadata.name')) ?? ''
+  } catch (error) {
+    log.warn(`[SyncSpace] Failed to read game name for ${gameId}, falling back to id:`, error)
+  }
+
+  const sanitized = sanitizeGameDirName(gameName)
+  if (sanitized) {
+    const nameDirPath = path.join(savesRoot, sanitized)
+    if (!(await fse.pathExists(nameDirPath))) {
+      return nameDirPath
+    }
+    const owner = await readGameIdMarker(nameDirPath)
+    if (owner === gameId) {
+      return nameDirPath
+    }
+    log.warn(
+      `[SyncSpace] Directory ${nameDirPath} is owned by ${owner ?? 'unknown'}, ` +
+        `falling back to gameId directory for ${gameId}`
+    )
+  }
+
+  return path.join(savesRoot, gameId)
+}
+
+/** Create the game directory (if needed) and stamp it with the owner gameId. */
+async function ensureGameSyncDir(gameDirPath: string, gameId: string): Promise<void> {
+  await fse.ensureDir(gameDirPath)
+  const markerPath = path.join(gameDirPath, GAME_ID_MARKER_FILE)
+  if (!(await fse.pathExists(markerPath))) {
+    await fse.writeFile(markerPath, gameId, 'utf8')
+  }
+}
+
+/**
  * Find an existing sync space entry (folder or single-file save) for a game.
- * Matches exactly `<gameId>_<basename>` so that multiple save paths of the
- * same game (different basenames) never get mixed into one entry.
+ *
+ * Checks the new structure first (`Vnitesaves/<gameDir>/<basename>`, where the
+ * game directory is matched by gameId — either via its `.vnite-game-id` marker
+ * or by being literally named after the gameId), then falls back to the legacy
+ * flat structure (`<syncSpacePath>/<gameId>_<basename>`). Matching is always
+ * keyed on gameId + basename, never on the display name alone, so entries stay
+ * resolvable across devices and after renames.
  */
 async function findExistingSyncTarget(
   syncSpacePath: string,
   gameId: string,
   basename: string
 ): Promise<{ targetPath: string; isDirectory: boolean } | null> {
+  // New structure: Vnitesaves/<gameDir>/<basename>
   try {
-    const entries = await fse.readdir(syncSpacePath, { withFileTypes: true })
-    for (const entry of entries) {
-      if (entry.name === `${gameId}_${basename}`) {
-        return {
-          targetPath: path.join(syncSpacePath, entry.name),
-          isDirectory: entry.isDirectory()
-        }
+    const savesRoot = path.join(syncSpacePath, SYNC_SAVES_DIR)
+    const gameDirs = await fse.readdir(savesRoot, { withFileTypes: true })
+    for (const gameDir of gameDirs) {
+      if (!gameDir.isDirectory()) continue
+      const gameDirPath = path.join(savesRoot, gameDir.name)
+      const owner = gameDir.name === gameId ? gameId : await readGameIdMarker(gameDirPath)
+      if (owner !== gameId) continue
+      const candidatePath = path.join(gameDirPath, basename)
+      const stat = await fse.stat(candidatePath).catch(() => null)
+      if (stat) {
+        return { targetPath: candidatePath, isDirectory: stat.isDirectory() }
       }
     }
-    return null
   } catch {
-    return null
+    // Vnitesaves/ missing or unreadable — fall through to the legacy lookup
   }
+
+  // Legacy structure: <syncSpacePath>/<gameId>_<basename>
+  const legacyPath = path.join(syncSpacePath, `${gameId}_${basename}`)
+  const legacyStat = await fse.stat(legacyPath).catch(() => null)
+  if (legacyStat) {
+    return { targetPath: legacyPath, isDirectory: legacyStat.isDirectory() }
+  }
+
+  return null
 }
 
 function symlinkPermissionError(symlinkError: any): Error {
@@ -162,11 +254,14 @@ export async function convertSaveToSyncSpace(gameId: string, savePath: string): 
     }
 
     // No existing entry — move the local save into the sync space
-    const targetPath = path.join(syncSpacePath, `${gameId}_${basename}`)
+    const gameDirPath = await resolveGameSyncDir(syncSpacePath, gameId)
+    const targetPath = path.join(gameDirPath, basename)
 
     if (await fse.pathExists(targetPath)) {
       throw new Error(`Target path ${targetPath} already exists in sync space.`)
     }
+
+    await ensureGameSyncDir(gameDirPath, gameId)
 
     log.info(`[SyncSpace] Moving ${savePath} to ${targetPath}`)
     await fse.move(savePath, targetPath, { overwrite: false })

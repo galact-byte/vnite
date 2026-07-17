@@ -62,17 +62,30 @@ export async function backupGameSave(gameId: string): Promise<string> {
         }
       }
 
+      const copyFailures: string[] = []
       await Promise.all(
         savePaths.map(async (pathInGame) => {
           const backupName = path.basename(pathInGame)
           try {
-            // Copy the file to the temporary backup directory
-            await fse.copy(pathInGame, path.join(tempFilesPath, backupName))
+            // Copy the file to the temporary backup directory.
+            // dereference: converted save paths are symlinks into the sync space;
+            // we must copy the real content, not the link itself (which fails with
+            // EPERM on Windows without symlink privileges and yields empty backups).
+            await fse.copy(pathInGame, path.join(tempFilesPath, backupName), {
+              dereference: true
+            })
           } catch (error) {
+            copyFailures.push(`${pathInGame}: ${error instanceof Error ? error.message : error}`)
             log.error(`[Game] Failed to backup ${pathInGame}:`, error)
           }
         })
       )
+
+      // If nothing was copied, storing the zip would silently persist an empty
+      // backup and users would only find out when trying to restore. Fail loudly.
+      if (savePaths.length > 0 && copyFailures.length === savePaths.length) {
+        throw new Error(`[Game] All save paths failed to backup: ${copyFailures.join('; ')}`)
+      }
 
       // Create a zip file from the temporary backup directory
       const zipPath = await zipFolder(tempFilesPath, tempZipPath, saveId)
