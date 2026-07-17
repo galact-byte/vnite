@@ -4,7 +4,7 @@ import log from 'electron-log/main'
 import windowStateKeeper from 'electron-window-state'
 import { join } from 'path'
 import { baseDBManager, GameDBManager, runDatabaseMigrations } from '~/core/database'
-import { startSync, syncBeforeQuit } from '~/features/database'
+import { startSync, syncBeforeQuit, encryptStoredWebdavPasswordIfNeeded } from '~/features/database'
 import {
   getAppRootPath,
   getDataPath,
@@ -264,6 +264,7 @@ app.whenReady().then(async () => {
 
   baseDBManager.initAllDatabases()
   await runDatabaseMigrations(app.getVersion())
+  await encryptStoredWebdavPasswordIfNeeded()
 
   // Setup proxy config
   await setupProxy()

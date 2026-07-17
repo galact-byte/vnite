@@ -179,6 +179,21 @@ type MainIpcEvents =
         lastModified?: string
         size?: number
       } | null
+      'db:webdav-get-conflict-detail': (
+        dbName: string,
+        docId: string
+      ) => {
+        success: boolean
+        message?: string
+        local?: Record<string, unknown> | null
+        remote?: Record<string, unknown> | null
+        remoteDeleted?: boolean
+      }
+      'db:webdav-resolve-conflict': (
+        dbName: string,
+        docId: string,
+        choice: 'local' | 'remote'
+      ) => { success: boolean; message?: string }
 
       // Game save management events
       'game:search-save-paths': (gameId: string) => string[]

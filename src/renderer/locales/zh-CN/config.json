@@ -374,6 +374,7 @@
       "remotePath": "远程存储路径",
       "username": "用户名",
       "password": "密码",
+      "passwordSaved": "已保存（输入以更改）",
       "testConnection": "测试连接",
       "syncNow": "立即同步",
       "upload": "上传本地快照",
@@ -401,7 +402,18 @@
       "conflicts": {
         "title": "{{count}} 个同步冲突",
         "clear": "知道了",
-        "detectedAt": "检测于"
+        "detectedAt": "检测于",
+        "viewDiff": "查看差异",
+        "keepLocal": "保留本地",
+        "useRemote": "采用远端",
+        "resolved": "冲突已解决",
+        "resolveFailed": "解决冲突失败:{{message}}",
+        "diffTitle": "差异:{{name}}",
+        "localVersion": "本地版本",
+        "remoteVersion": "远端版本",
+        "noDiff": "顶层字段无差异",
+        "detailFailed": "获取差异失败:{{message}}",
+        "remoteMissing": "远端版本已不存在"
       },
       "status": {
         "title": "本机同步状态",

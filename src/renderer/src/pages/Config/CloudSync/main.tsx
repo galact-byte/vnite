@@ -1,4 +1,5 @@
 import { cn } from '~/utils'
+import { isEncryptedPassword } from '@appUtils'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
@@ -8,16 +9,18 @@ import { useConfigLocalState } from '~/hooks'
 import { RadioGroup, RadioGroupItem } from '~/components/ui/radio-group'
 import { Label } from '~/components/ui/label'
 import { Avatar, AvatarFallback, AvatarImage } from '~/components/ui/avatar'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '~/components/ui/dropdown-menu'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '~/components/ui/dialog'
 import {
   User,
   LogOut,
+  Loader2,
   HardDrive,
   Cloud,
   Key,
@@ -41,6 +44,46 @@ import { Switch } from '~/components/ui/switch'
 import { Badge } from '~/components/ui/badge'
 import { useGameRegistry } from '~/stores/game'
 import { Trans } from 'react-i18next'
+
+const DIFF_IGNORED_KEYS = new Set(['_id', '_rev', '_attachments'])
+
+/** Key-order-independent serialization so reordered-but-equal objects don't diff. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null'
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => (v === undefined ? 'null' : stableStringify(v))).join(',')}]`
+  }
+  const obj = value as Record<string, unknown>
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`
+}
+
+function computeChangedTopLevelKeys(
+  local: Record<string, unknown> | null | undefined,
+  remote: Record<string, unknown> | null | undefined
+): string[] {
+  const keys = new Set<string>([...Object.keys(local ?? {}), ...Object.keys(remote ?? {})])
+  return [...keys]
+    .filter(
+      (key) =>
+        !DIFF_IGNORED_KEYS.has(key) &&
+        stableStringify((local ?? {})[key]) !== stableStringify((remote ?? {})[key])
+    )
+    .sort()
+}
+
+interface ConflictDiffState {
+  dbName: string
+  docId: string
+  loading: boolean
+  local?: Record<string, unknown> | null
+  remote?: Record<string, unknown> | null
+  remoteDeleted?: boolean
+}
 
 export function CloudSync(): React.JSX.Element {
   const { t } = useTranslation('config')
@@ -94,6 +137,8 @@ export function CloudSync(): React.JSX.Element {
   } | null>(null)
   const [webdavConflicts, setWebdavConflicts] = useConfigLocalState('webdav-sync-conflicts.items')
   const [conflictsExpanded, setConflictsExpanded] = useState(false)
+  const [resolvingConflicts, setResolvingConflicts] = useState<Set<string>>(new Set())
+  const [conflictDiff, setConflictDiff] = useState<ConflictDiffState | null>(null)
   const [webdavStatus] = useConfigLocalState('sync.webdavStatus')
   const [syncProgress, setSyncProgress] = useState<{
     phase: 'download' | 'upload'
@@ -106,6 +151,79 @@ export function CloudSync(): React.JSX.Element {
 
   const [syncSpacePath, setSyncSpacePath, saveSyncSpacePath, setSyncSpacePathAndSave] =
     useConfigLocalState('sync.syncSpacePath', true)
+
+  const conflictDisplayName = (dbName: string, docId: string): string =>
+    (dbName === 'game' && gameMetaIndex[docId]?.name) || docId
+
+  const conflictChangedKeys = useMemo(
+    () =>
+      conflictDiff && !conflictDiff.loading
+        ? computeChangedTopLevelKeys(conflictDiff.local, conflictDiff.remote)
+        : [],
+    [conflictDiff]
+  )
+
+  const handleResolveConflict = async (
+    dbName: string,
+    docId: string,
+    choice: 'local' | 'remote'
+  ): Promise<void> => {
+    const key = `${dbName}/${docId}`
+    setResolvingConflicts((prev) => new Set(prev).add(key))
+    try {
+      const result = await ipcManager.invoke('db:webdav-resolve-conflict', dbName, docId, choice)
+      if (result.success) {
+        toast.success(t('cloudSync.webdav.conflicts.resolved'))
+        // The list entry itself is removed by main and arrives via the store
+        setConflictDiff((prev) =>
+          prev && prev.dbName === dbName && prev.docId === docId ? null : prev
+        )
+      } else {
+        toast.error(
+          t('cloudSync.webdav.conflicts.resolveFailed', { message: result.message ?? '' })
+        )
+      }
+    } catch (error) {
+      toast.error(
+        t('cloudSync.webdav.conflicts.resolveFailed', {
+          message: error instanceof Error ? error.message : String(error)
+        })
+      )
+    } finally {
+      setResolvingConflicts((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  const handleViewConflictDiff = async (dbName: string, docId: string): Promise<void> => {
+    setConflictDiff({ dbName, docId, loading: true })
+    try {
+      const detail = await ipcManager.invoke('db:webdav-get-conflict-detail', dbName, docId)
+      if (!detail.success) {
+        toast.error(t('cloudSync.webdav.conflicts.detailFailed', { message: detail.message ?? '' }))
+        setConflictDiff(null)
+        return
+      }
+      setConflictDiff({
+        dbName,
+        docId,
+        loading: false,
+        local: detail.local ?? null,
+        remote: detail.remote ?? null,
+        remoteDeleted: detail.remoteDeleted
+      })
+    } catch (error) {
+      toast.error(
+        t('cloudSync.webdav.conflicts.detailFailed', {
+          message: error instanceof Error ? error.message : String(error)
+        })
+      )
+      setConflictDiff(null)
+    }
+  }
 
   useEffect(() => {
     if (enabled && syncMode === 'webdav' && webdavUrl && webdavUsername) {
@@ -734,10 +852,14 @@ export function CloudSync(): React.JSX.Element {
                         <Input
                           className={cn('w-full')}
                           type="password"
-                          value={webdavPassword}
+                          value={isEncryptedPassword(webdavPassword) ? '' : webdavPassword}
                           onChange={(e) => setWebdavPassword(e.target.value)}
                           onBlur={saveWebdavPassword}
-                          placeholder="••••••••"
+                          placeholder={
+                            isEncryptedPassword(webdavPassword)
+                              ? t('cloudSync.webdav.passwordSaved')
+                              : '••••••••'
+                          }
                         />
                       </div>
 
@@ -842,30 +964,179 @@ export function CloudSync(): React.JSX.Element {
                             </div>
                             {conflictsExpanded && (
                               <div className="flex flex-col gap-1 mt-2 border-t border-amber-200 dark:border-amber-800 pt-2">
-                                {webdavConflicts.map((conflict) => (
-                                  <div
-                                    key={`${conflict.dbName}/${conflict.docId}`}
-                                    className="flex items-center gap-2 text-xs"
-                                  >
-                                    <Badge variant="outline">{conflict.dbName}</Badge>
-                                    <span className="flex-1 truncate">
-                                      {(conflict.dbName === 'game' &&
-                                        gameMetaIndex[conflict.docId]?.name) ||
-                                        conflict.docId}
-                                    </span>
-                                    <span className="text-muted-foreground whitespace-nowrap">
-                                      {t('cloudSync.webdav.conflicts.detectedAt')}{' '}
-                                      {t('{{date, niceDateSeconds}}', {
-                                        date: conflict.detectedAt
-                                      })}
-                                    </span>
-                                  </div>
-                                ))}
+                                {webdavConflicts.map((conflict) => {
+                                  const key = `${conflict.dbName}/${conflict.docId}`
+                                  const resolving = resolvingConflicts.has(key)
+                                  return (
+                                    <div key={key} className="flex items-center gap-2 text-xs">
+                                      <Badge variant="outline">{conflict.dbName}</Badge>
+                                      <span className="flex-1 truncate">
+                                        {conflictDisplayName(conflict.dbName, conflict.docId)}
+                                      </span>
+                                      <span className="text-muted-foreground whitespace-nowrap">
+                                        {t('cloudSync.webdav.conflicts.detectedAt')}{' '}
+                                        {t('{{date, niceDateSeconds}}', {
+                                          date: conflict.detectedAt
+                                        })}
+                                      </span>
+                                      {resolving ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                                      ) : (
+                                        <>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-6 px-2 text-xs"
+                                            onClick={() =>
+                                              handleViewConflictDiff(
+                                                conflict.dbName,
+                                                conflict.docId
+                                              )
+                                            }
+                                          >
+                                            {t('cloudSync.webdav.conflicts.viewDiff')}
+                                          </Button>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-6 px-2 text-xs"
+                                            onClick={() =>
+                                              handleResolveConflict(
+                                                conflict.dbName,
+                                                conflict.docId,
+                                                'local'
+                                              )
+                                            }
+                                          >
+                                            {t('cloudSync.webdav.conflicts.keepLocal')}
+                                          </Button>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-6 px-2 text-xs"
+                                            onClick={() =>
+                                              handleResolveConflict(
+                                                conflict.dbName,
+                                                conflict.docId,
+                                                'remote'
+                                              )
+                                            }
+                                          >
+                                            {t('cloudSync.webdav.conflicts.useRemote')}
+                                          </Button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )
+                                })}
                               </div>
                             )}
                           </div>
                         </div>
                       )}
+
+                      {/* Conflict diff dialog */}
+                      <Dialog
+                        open={conflictDiff !== null}
+                        onOpenChange={(open) => !open && setConflictDiff(null)}
+                      >
+                        <DialogContent className="max-w-3xl">
+                          <DialogHeader>
+                            <DialogTitle>
+                              {t('cloudSync.webdav.conflicts.diffTitle', {
+                                name: conflictDiff
+                                  ? conflictDisplayName(conflictDiff.dbName, conflictDiff.docId)
+                                  : ''
+                              })}
+                            </DialogTitle>
+                          </DialogHeader>
+                          {conflictDiff?.loading ? (
+                            <div className="flex items-center justify-center py-8">
+                              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                            </div>
+                          ) : conflictDiff ? (
+                            <>
+                              <div className="flex flex-col gap-3 max-h-[60vh] overflow-y-auto text-xs">
+                                {conflictDiff.remote === null && (
+                                  <p className="text-muted-foreground">
+                                    {t('cloudSync.webdav.conflicts.remoteMissing')}
+                                  </p>
+                                )}
+                                {conflictChangedKeys.length === 0 ? (
+                                  <p className="text-muted-foreground">
+                                    {t('cloudSync.webdav.conflicts.noDiff')}
+                                  </p>
+                                ) : (
+                                  <>
+                                    <div className="grid grid-cols-2 gap-2 font-medium">
+                                      <span>{t('cloudSync.webdav.conflicts.localVersion')}</span>
+                                      <span>{t('cloudSync.webdav.conflicts.remoteVersion')}</span>
+                                    </div>
+                                    {conflictChangedKeys.map((key) => (
+                                      <div key={key} className="flex flex-col gap-1">
+                                        <span className="font-medium">{key}</span>
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <pre className="p-2 rounded-md bg-muted/40 overflow-x-auto whitespace-pre-wrap break-all">
+                                            {JSON.stringify(
+                                              (conflictDiff.local ?? {})[key],
+                                              null,
+                                              2
+                                            ) ?? '—'}
+                                          </pre>
+                                          <pre className="p-2 rounded-md bg-muted/40 overflow-x-auto whitespace-pre-wrap break-all">
+                                            {JSON.stringify(
+                                              (conflictDiff.remote ?? {})[key],
+                                              null,
+                                              2
+                                            ) ?? '—'}
+                                          </pre>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </>
+                                )}
+                              </div>
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={resolvingConflicts.has(
+                                    `${conflictDiff.dbName}/${conflictDiff.docId}`
+                                  )}
+                                  onClick={() =>
+                                    handleResolveConflict(
+                                      conflictDiff.dbName,
+                                      conflictDiff.docId,
+                                      'local'
+                                    )
+                                  }
+                                >
+                                  {t('cloudSync.webdav.conflicts.keepLocal')}
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={
+                                    conflictDiff.remote === null ||
+                                    resolvingConflicts.has(
+                                      `${conflictDiff.dbName}/${conflictDiff.docId}`
+                                    )
+                                  }
+                                  onClick={() =>
+                                    handleResolveConflict(
+                                      conflictDiff.dbName,
+                                      conflictDiff.docId,
+                                      'remote'
+                                    )
+                                  }
+                                >
+                                  {t('cloudSync.webdav.conflicts.useRemote')}
+                                </Button>
+                              </div>
+                            </>
+                          ) : null}
+                        </DialogContent>
+                      </Dialog>
 
                       <div className="col-span-2 pt-2 text-xs text-muted-foreground border-t mt-2">
                         <p className="flex items-center gap-1 mb-2 font-medium">
