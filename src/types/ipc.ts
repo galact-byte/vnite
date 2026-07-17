@@ -207,7 +207,12 @@ type MainIpcEvents =
       // Game memory management events
       'game:add-memory': (gameId: string) => gameDoc['memory']['memoryList'][string]
       'game:delete-memory': (gameId: string, memoryId: string) => void
-      'game:update-memory-cover': (gameId: string, memoryId: string, imgPath: string) => void
+      'game:update-memory-cover': (
+        gameId: string,
+        memoryId: string,
+        imgPath: string,
+        options?: { originalImagePath?: string }
+      ) => void
       'game:add-memory-inline-image': (gameId: string, imgPath: string) => string
       'game:export-all-memories': (gameId: string) => 'success' | 'empty' | 'canceled'
 
@@ -285,6 +290,14 @@ type MainIpcEvents =
       'importer:import-selected-steam-games': (games: SteamFormattedGameInfo[]) => number
 
       'launcher:select-preset': (presetName: string, gameId: string, steamId?: string) => void
+
+      'toolbox:launch-tool': (tool: {
+        path: string
+        args: string
+        workingDirectory: string
+      }) => void
+      'toolbox:refresh-tool-icon': (toolId: string, exePath: string) => void
+      'toolbox:remove-tool': (toolId: string) => void
 
       'scraper:search-games': (dataSource: string, gameName: string) => GameList
       'scraper:check-game-exists': (dataSource: string, identifier: ScraperIdentifier) => boolean

@@ -108,6 +108,7 @@ export interface configDocs {
       showNSFWBlurSwitcher: boolean
       showLocalGameFilterSwitcher: boolean
       showCustomVisibilityFilterSwitcher: boolean
+      showToolbox: boolean
     }
     background: {
       customBackground: boolean
@@ -129,6 +130,7 @@ export interface configDocs {
       contentTopPadding: number
     }
     memory: {
+      gridColumnWidth: number
       masonryColumnWidth: number
       gridItemsPerPage: number
       masonryItemsPerPage: number
@@ -239,6 +241,7 @@ export interface configDocs {
   memory: {
     image: {
       saveToClipboard: boolean
+      autoFillNoteFromFilename: boolean
     }
     enableNotificationSound: boolean
   }
@@ -364,6 +367,16 @@ export interface configLocalDocs {
     items: Array<{ dbName: string; docId: string; detectedAt: string }>
     updatedAt: string
   }
+  toolbox: {
+    tools: {
+      [id: string]: {
+        name: string
+        path: string
+        args: string
+        workingDirectory: string
+      }
+    }
+  }
 }
 
 export const DEFAULT_CONFIG_VALUES: Readonly<configDocs> = {
@@ -429,7 +442,8 @@ export const DEFAULT_CONFIG_VALUES: Readonly<configDocs> = {
       showThemeSwitcher: true,
       showNSFWBlurSwitcher: true,
       showLocalGameFilterSwitcher: true,
-      showCustomVisibilityFilterSwitcher: false
+      showCustomVisibilityFilterSwitcher: false,
+      showToolbox: true
     },
     background: {
       customBackground: true
@@ -451,6 +465,7 @@ export const DEFAULT_CONFIG_VALUES: Readonly<configDocs> = {
       contentTopPadding: 40 // in vh
     },
     memory: {
+      gridColumnWidth: 280,
       masonryColumnWidth: 220,
       gridItemsPerPage: 12,
       masonryItemsPerPage: 20,
@@ -523,7 +538,8 @@ export const DEFAULT_CONFIG_VALUES: Readonly<configDocs> = {
   },
   memory: {
     image: {
-      saveToClipboard: false
+      saveToClipboard: false,
+      autoFillNoteFromFilename: false
     },
     enableNotificationSound: true
   },
@@ -647,5 +663,15 @@ export const DEFAULT_CONFIG_LOCAL_VALUES: Readonly<configLocalDocs> = {
   'webdav-sync-conflicts': {
     items: [],
     updatedAt: ''
+  },
+  toolbox: {
+    tools: {} as {
+      [id: string]: {
+        name: string
+        path: string
+        args: string
+        workingDirectory: string
+      }
+    }
   }
 } as const
