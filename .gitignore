@@ -25,3 +25,6 @@ vnite-webdav-sync-plan.md
 /.pi/
 /.trellis/
 /AGENTS.md
+
+# Temp verification scripts
+.verify-tmp/
