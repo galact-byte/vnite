@@ -7,6 +7,8 @@ import {
   uploadSnapshot,
   downloadSnapshot,
   syncBidirectional,
+  getConflictVersions,
+  resolveConflict,
   ConflictInfo,
   Manifest,
   SyncProgress,
@@ -14,8 +16,21 @@ import {
   SyncResult
 } from './sync-engine'
 import log from 'electron-log/main'
+import { decryptStoredPassword } from './password-crypto'
 
 type WebDAVConfig = configLocalDocs['sync']['webdavConfig']
+
+/**
+ * The password is stored encrypted (safeStorage) in config-local; decrypt it
+ * just before handing the config to the WebDAV adapter. A failed decryption
+ * yields an empty password, surfacing as an incomplete-config error.
+ */
+function withDecryptedPassword(config: WebDAVConfig): WebDAVConfig {
+  return {
+    ...config,
+    auth: { ...config.auth, password: decryptStoredPassword(config.auth.password) }
+  }
+}
 
 export interface WebDAVSyncOptions {
   /** Suppress renderer progress events (background/auto sync) */
@@ -96,13 +111,89 @@ async function writeWebdavStatus(
   }
 }
 
+/** Decrypt + validate the config and build an adapter for one-off operations. */
+function createAdapter(rawConfig: WebDAVConfig): { adapter: WebDAVAdapter; remotePath: string } {
+  const config = withDecryptedPassword(rawConfig)
+  if (!config.url || !config.auth.username) {
+    throw new Error('Incomplete WebDAV config')
+  }
+  return {
+    adapter: new WebDAVAdapter(config),
+    remotePath: config.remotePath || '/vnite-sync/'
+  }
+}
+
+/** Remove a single resolved entry from the persisted conflict list. */
+async function removeSyncConflict(dbName: string, docId: string): Promise<void> {
+  const items = await baseDBManager.getValue<
+    Array<{ dbName: string; docId: string; detectedAt: string }>
+  >('config-local', CONFLICTS_DOC_ID, 'items', [])
+  const remaining = items.filter((item) => !(item.dbName === dbName && item.docId === docId))
+  if (remaining.length === items.length) return
+  await baseDBManager.setValue('config-local', CONFLICTS_DOC_ID, '#all', {
+    items: remaining,
+    updatedAt: new Date().toISOString()
+  })
+}
+
+/**
+ * Load both sides of a conflict for the renderer's diff view.
+ */
+export async function getWebdavConflictDetail(
+  rawConfig: WebDAVConfig,
+  dbName: string,
+  docId: string
+): Promise<{
+  success: boolean
+  message?: string
+  local?: Record<string, unknown> | null
+  remote?: Record<string, unknown> | null
+  remoteDeleted?: boolean
+}> {
+  try {
+    const { adapter, remotePath } = createAdapter(rawConfig)
+    const versions = await getConflictVersions(adapter, remotePath, dbName, docId)
+    return { success: true, ...versions }
+  } catch (error: any) {
+    log.error(`[WebDAV] Failed to load conflict detail for ${dbName}/${docId}:`, error)
+    return { success: false, message: error?.message || 'Failed to load conflict detail' }
+  }
+}
+
+/**
+ * Resolve a single conflict (keep local / use remote) and drop it from the
+ * persisted conflict list on success.
+ */
+export async function resolveWebdavConflict(
+  rawConfig: WebDAVConfig,
+  dbName: string,
+  docId: string,
+  choice: 'local' | 'remote'
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const { adapter, remotePath } = createAdapter(rawConfig)
+    await resolveConflict(adapter, remotePath, dbName, docId, choice)
+  } catch (error: any) {
+    log.error(`[WebDAV] Failed to resolve conflict ${dbName}/${docId} (${choice}):`, error)
+    return { success: false, message: error?.message || 'Failed to resolve conflict' }
+  }
+  try {
+    await removeSyncConflict(dbName, docId)
+  } catch (error) {
+    // Resolution itself succeeded; a stale list entry is cleared by the next sync
+    log.warn('[WebDAV] Failed to update conflict list after resolution:', error)
+  }
+  return { success: true }
+}
+
 /**
  * Test WebDAV connection by attempting to list the root directory.
  */
 export async function testWebDAVConnection(
-  config: WebDAVConfig
+  rawConfig: WebDAVConfig
 ): Promise<{ success: boolean; message: string }> {
   try {
+    const config = withDecryptedPassword(rawConfig)
     if (!config.url || !config.auth.username || !config.auth.password) {
       return {
         success: false,
@@ -126,12 +217,13 @@ export async function testWebDAVConnection(
 /**
  * Get remote snapshot metadata.
  */
-export async function getRemoteSnapshotInfo(config: WebDAVConfig): Promise<{
+export async function getRemoteSnapshotInfo(rawConfig: WebDAVConfig): Promise<{
   exists: boolean
   lastModified?: string
   size?: number
 } | null> {
   try {
+    const config = withDecryptedPassword(rawConfig)
     const adapter = new WebDAVAdapter(config)
     const remotePath = config.remotePath || '/vnite-sync/'
     const manifestPath = path.posix.join(remotePath, 'manifest.json')
@@ -163,10 +255,11 @@ export async function getRemoteSnapshotInfo(config: WebDAVConfig): Promise<{
  * - 'auto': Bidirectional sync — download first, then upload
  */
 export async function syncViaWebDAV(
-  config: WebDAVConfig,
+  rawConfig: WebDAVConfig,
   direction: 'upload' | 'download' | 'auto',
   options: WebDAVSyncOptions = {}
 ): Promise<SyncResult> {
+  const config = withDecryptedPassword(rawConfig)
   if (!config.url || !config.auth.username) {
     throw new Error('Incomplete WebDAV config')
   }

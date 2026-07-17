@@ -13,7 +13,10 @@ import {
   removeGameImageAttachment,
   testWebDAVConnection,
   syncViaWebDAV,
-  getRemoteSnapshotInfo
+  getRemoteSnapshotInfo,
+  getWebdavConflictDetail,
+  resolveWebdavConflict,
+  encryptPasswordForStorage
 } from './services'
 import { baseDBManager, ConfigDBManager } from '~/core/database'
 import { ipcManager } from '~/core/ipc'
@@ -22,6 +25,16 @@ import { shouldReinferRootPath } from '~/utils'
 
 export function setupDatabaseIPC(): void {
   ipcManager.handle('db:doc-changed', async (_event, change: DocChange) => {
+    // Encrypt the WebDAV password at the DB boundary: the renderer writes
+    // the whole sync doc back in plaintext when the user edits it, and it
+    // must never be persisted unencrypted (no-op if already encrypted).
+    if (change.dbName === 'config-local' && change.docId === 'sync') {
+      const webdavAuth = change.data?.webdavConfig?.auth
+      if (webdavAuth?.password) {
+        webdavAuth.password = encryptPasswordForStorage(webdavAuth.password)
+      }
+    }
+
     // Ensure rootPath consistency when saving game-local data.
     // If gamePath changed and rootPath is empty or gamePath falls outside rootPath,
     // re-infer rootPath from the directory of gamePath before saving.
@@ -132,6 +145,19 @@ export function setupDatabaseIPC(): void {
     const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
     return await syncViaWebDAV(config, direction)
   })
+
+  ipcManager.handle('db:webdav-get-conflict-detail', async (_, dbName: string, docId: string) => {
+    const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
+    return await getWebdavConflictDetail(config, dbName, docId)
+  })
+
+  ipcManager.handle(
+    'db:webdav-resolve-conflict',
+    async (_, dbName: string, docId: string, choice: 'local' | 'remote') => {
+      const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
+      return await resolveWebdavConflict(config, dbName, docId, choice)
+    }
+  )
 
   ipcManager.handle('db:get-webdav-remote-info', async () => {
     const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')

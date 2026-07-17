@@ -374,6 +374,7 @@
       "remotePath": "Remote Storage Path",
       "username": "Username",
       "password": "Password",
+      "passwordSaved": "Saved (type to change)",
       "testConnection": "Test Connection",
       "syncNow": "Sync Now",
       "upload": "Upload Local Snapshot",
@@ -401,7 +402,18 @@
       "conflicts": {
         "title": "{{count}} sync conflict(s)",
         "clear": "Dismiss",
-        "detectedAt": "Detected at"
+        "detectedAt": "Detected at",
+        "viewDiff": "View Diff",
+        "keepLocal": "Keep Local",
+        "useRemote": "Use Remote",
+        "resolved": "Conflict resolved",
+        "resolveFailed": "Failed to resolve conflict: {{message}}",
+        "diffTitle": "Diff: {{name}}",
+        "localVersion": "Local Version",
+        "remoteVersion": "Remote Version",
+        "noDiff": "No differences in top-level fields",
+        "detailFailed": "Failed to load diff: {{message}}",
+        "remoteMissing": "The remote version no longer exists"
       },
       "status": {
         "title": "Local Sync Status",

@@ -505,6 +505,12 @@ async function downloadSnapshotInternal(
           newBaselineDB[docId] = { ...remoteEntry }
           continue
         }
+        if (isTombstone(baselineEntry)) {
+          // Deletion already synced (B == R tombstone); a local doc here means
+          // it was recreated locally → plain local change, not a conflict.
+          // The upload phase re-uploads it over the tombstone.
+          continue
+        }
         // Local doc exists
         const locallyChanged = !isLiveEntry(baselineEntry) || localHash !== baselineEntry.hash
         if (!locallyChanged) {
@@ -749,21 +755,25 @@ async function uploadSnapshotInternal(
         // local doc is parked under conflicts/ on the remote for recovery.
         result.conflicts.push({ docId, dbName })
         try {
-          const fullDoc = await db.get(docId, { attachments: true, binary: true })
-          const conflictClone = await extractAndUploadAttachments(
-            adapter,
-            remotePath,
-            fullDoc,
-            result
-          )
+          // Content-addressed name: a persisting conflict re-detected on every
+          // sync writes the copy only once per distinct local content, instead
+          // of accumulating a new timestamped file per sync run.
           const conflictDir = path.posix.join(remotePath, 'conflicts')
-          const conflictName = `${dbName}__${encodeURIComponent(docId)}__${Date.now()}.json`
-          await ensureDirRecursive(adapter, conflictDir)
-          await adapter.writeFile(
-            path.posix.join(conflictDir, conflictName),
-            JSON.stringify(conflictClone, null, 2),
-            { contentType: 'application/json' }
-          )
+          const conflictName = `${dbName}__${encodeURIComponent(docId)}__${localEntry.hash.slice(0, 16)}.json`
+          const conflictPath = path.posix.join(conflictDir, conflictName)
+          if (!(await adapter.exists(conflictPath))) {
+            const fullDoc = await db.get(docId, { attachments: true, binary: true })
+            const conflictClone = await extractAndUploadAttachments(
+              adapter,
+              remotePath,
+              fullDoc,
+              result
+            )
+            await ensureDirRecursive(adapter, conflictDir)
+            await adapter.writeFile(conflictPath, JSON.stringify(conflictClone, null, 2), {
+              contentType: 'application/json'
+            })
+          }
         } catch (err: any) {
           log.warn(`[Sync] Failed to write conflict copy for ${dbName}/${docId}:`, err)
         }
@@ -856,6 +866,232 @@ export async function downloadSnapshot(
     } finally {
       await releaseLock(adapter, remotePath, deviceId)
     }
+  })
+}
+
+// ─── Per-conflict Resolution ─────────────────────────────────────────
+
+export interface ConflictVersions {
+  local: Record<string, unknown> | null
+  remote: Record<string, unknown> | null
+  /** True when the remote manifest entry is a tombstone */
+  remoteDeleted: boolean
+}
+
+function assertSyncableDatabase(dbName: string): void {
+  if (!SYNCABLE_DATABASES.includes(dbName)) {
+    throw new Error(`Unknown database: ${dbName}`)
+  }
+}
+
+/** Strip _rev for display: it is device-local and meaningless in a diff. */
+function sanitizeDocForDisplay(doc: any): Record<string, unknown> {
+  const clone = { ...doc }
+  delete clone._rev
+  return clone
+}
+
+function emptySyncResult(): SyncResult {
+  return {
+    uploaded: 0,
+    downloaded: 0,
+    conflicts: [],
+    errors: [],
+    attachmentsUploaded: 0,
+    attachmentsDownloaded: 0
+  }
+}
+
+/**
+ * Read both sides of a conflict for display. Read-only and lock-free: a
+ * concurrent sync can at worst make this snapshot slightly stale; the actual
+ * resolution runs under the sync mutex + remote lock and re-reads the remote.
+ */
+export async function getConflictVersions(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  dbName: string,
+  docId: string
+): Promise<ConflictVersions> {
+  assertSyncableDatabase(dbName)
+  const db = baseDBManager.getRawDatabase(dbName)
+
+  let local: Record<string, unknown> | null = null
+  try {
+    local = sanitizeDocForDisplay(await db.get(docId))
+  } catch {
+    local = null
+  }
+
+  let remote: Record<string, unknown> | null = null
+  let remoteDeleted = false
+
+  const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
+  if (await adapter.exists(manifestPath)) {
+    const manifestContent = await adapter.readFile(manifestPath, 'text')
+    const manifest: Manifest = JSON.parse(manifestContent as string)
+    const entry = manifest.databases?.[dbName]?.[docId]
+    remoteDeleted = isTombstone(entry)
+    if (isLiveEntry(entry)) {
+      const docPath = remoteDocPath(remotePath, dbName, docId)
+      if (await adapter.exists(docPath)) {
+        const docContent = await adapter.readFile(docPath, 'text')
+        remote = sanitizeDocForDisplay(JSON.parse(docContent as string))
+      }
+    }
+  }
+
+  return { local, remote, remoteDeleted }
+}
+
+/**
+ * Resolve a single conflict by choosing one side wholesale.
+ *
+ * - 'local': upload the local doc over the remote one, advancing both the
+ *   remote manifest and the baseline to the local version.
+ * - 'remote': apply the remote doc (attachments restored) to the local DB,
+ *   advancing the baseline to the remote manifest entry.
+ *
+ * Runs under the sync mutex + remote lock so it cannot interleave with a
+ * running sync. On any failure the baseline is left untouched, so the
+ * conflict keeps being re-reported by subsequent syncs.
+ */
+export async function resolveConflict(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  dbName: string,
+  docId: string,
+  choice: 'local' | 'remote'
+): Promise<void> {
+  assertSyncableDatabase(dbName)
+  return withSyncMutex(async () => {
+    const deviceId = await getDeviceId()
+    await acquireLock(adapter, remotePath, deviceId)
+    try {
+      if (choice === 'local') {
+        await resolveConflictKeepLocal(adapter, remotePath, deviceId, dbName, docId)
+      } else {
+        await resolveConflictUseRemote(adapter, remotePath, deviceId, dbName, docId)
+      }
+    } finally {
+      await releaseLock(adapter, remotePath, deviceId)
+    }
+  })
+}
+
+async function resolveConflictKeepLocal(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  deviceId: string,
+  dbName: string,
+  docId: string
+): Promise<void> {
+  const db = baseDBManager.getRawDatabase(dbName)
+
+  let fullDoc: any
+  try {
+    fullDoc = await db.get(docId, { attachments: true, binary: true })
+  } catch {
+    throw new Error(`Local doc ${dbName}/${docId} no longer exists; run a sync instead`)
+  }
+
+  // Attachment counters are not surfaced for a single-doc resolution
+  const docClone = await extractAndUploadAttachments(
+    adapter,
+    remotePath,
+    fullDoc,
+    emptySyncResult()
+  )
+
+  const docDir = path.posix.join(remotePath, 'docs', dbName)
+  await ensureDirRecursive(adapter, docDir)
+  await adapter.writeFile(remoteDocPath(remotePath, dbName, docId), JSON.stringify(docClone), {
+    contentType: 'application/json'
+  })
+
+  const newEntry: DocEntry = { rev: fullDoc._rev, hash: docContentHash(fullDoc) }
+
+  // Advance the remote manifest before the baseline: if the manifest write
+  // fails the baseline stays put and the conflict remains visible.
+  const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
+  let remoteManifest: Manifest | null = null
+  if (await adapter.exists(manifestPath)) {
+    const manifestContent = await adapter.readFile(manifestPath, 'text')
+    remoteManifest = JSON.parse(manifestContent as string)
+  }
+  const newRemoteDatabases = cloneManifestDatabases(remoteManifest)
+  newRemoteDatabases[dbName][docId] = { ...newEntry }
+  const updatedManifest: Manifest = {
+    version: '2.0',
+    deviceId,
+    lastSync: new Date().toISOString(),
+    databases: newRemoteDatabases
+  }
+  await adapter.writeFile(manifestPath, JSON.stringify(updatedManifest), {
+    contentType: 'application/json'
+  })
+
+  const baseline = await loadBaselineManifest()
+  const newBaselineDatabases = cloneManifestDatabases(baseline)
+  newBaselineDatabases[dbName][docId] = { ...newEntry }
+  await saveBaselineManifest({
+    version: '2.0',
+    deviceId,
+    lastSync: new Date().toISOString(),
+    databases: newBaselineDatabases
+  })
+}
+
+async function resolveConflictUseRemote(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  deviceId: string,
+  dbName: string,
+  docId: string
+): Promise<void> {
+  const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
+  if (!(await adapter.exists(manifestPath))) {
+    throw new Error('Remote manifest missing; run a sync instead')
+  }
+  const manifestContent = await adapter.readFile(manifestPath, 'text')
+  const remoteManifest: Manifest = JSON.parse(manifestContent as string)
+  const remoteEntry = remoteManifest.databases?.[dbName]?.[docId]
+  if (!isLiveEntry(remoteEntry)) {
+    // Missing or tombstoned remote entry means this is no longer a live-live
+    // conflict; a normal sync will settle it (edit-wins / deletion).
+    throw new Error(`Remote version of ${dbName}/${docId} no longer exists; run a sync instead`)
+  }
+
+  const docPath = remoteDocPath(remotePath, dbName, docId)
+  if (!(await adapter.exists(docPath))) {
+    throw new Error(`Remote doc file for ${dbName}/${docId} is missing`)
+  }
+  const docContent = await adapter.readFile(docPath, 'text')
+  const doc = JSON.parse(docContent as string)
+
+  if (!(await restoreAttachments(adapter, remotePath, doc, emptySyncResult()))) {
+    throw new Error(`Attachment blob missing on remote for ${dbName}/${docId}`)
+  }
+
+  const db = baseDBManager.getRawDatabase(dbName)
+  try {
+    const localDoc = await db.get(docId)
+    doc._rev = localDoc._rev
+  } catch {
+    delete doc._rev
+  }
+  await db.put(doc)
+
+  // Same convention as the download phase: adopt the remote entry wholesale
+  // (rev is the remote device's rev; comparisons only use the hash).
+  const baseline = await loadBaselineManifest()
+  const newBaselineDatabases = cloneManifestDatabases(baseline)
+  newBaselineDatabases[dbName][docId] = { ...remoteEntry }
+  await saveBaselineManifest({
+    version: '2.0',
+    deviceId,
+    lastSync: new Date().toISOString(),
+    databases: newBaselineDatabases
   })
 }
 
