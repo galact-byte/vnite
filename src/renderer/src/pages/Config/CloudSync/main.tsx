@@ -174,7 +174,9 @@ export function CloudSync(): React.JSX.Element {
     setResolvingConflicts((prev) => new Set(prev).add(key))
     try {
       const result = await ipcManager.invoke('db:webdav-resolve-conflict', dbName, docId, choice)
-      if (result.success) {
+      if (result.success && result.status === 'pending-save-deletion') {
+        toast.warning(t('cloudSync.webdav.saveDeletions.detected', { count: 1 }))
+      } else if (result.success) {
         toast.success(t('cloudSync.webdav.conflicts.resolved'))
         // The list entry itself is removed by main and arrives via the store
         setConflictDiff((prev) =>
@@ -201,15 +203,16 @@ export function CloudSync(): React.JSX.Element {
   }
 
   const handleSaveDeletionAction = async (
-    gameId: string,
+    pending: (typeof pendingSaveDeletions)[number],
     action: 'confirm' | 'dismiss'
   ): Promise<void> => {
-    setProcessingSaveDeletions((prev) => new Set(prev).add(gameId))
+    const { id } = pending
+    setProcessingSaveDeletions((prev) => new Set(prev).add(id))
     try {
       const result =
         action === 'confirm'
-          ? await ipcManager.invoke('db:webdav-confirm-save-deletion', gameId)
-          : await ipcManager.invoke('db:webdav-dismiss-save-deletion', gameId)
+          ? await ipcManager.invoke('db:webdav-confirm-save-deletion', id)
+          : await ipcManager.invoke('db:webdav-dismiss-save-deletion', id)
       if (result.success) {
         // The list entry itself is removed by main and arrives via the store
         toast.success(
@@ -231,7 +234,7 @@ export function CloudSync(): React.JSX.Element {
     } finally {
       setProcessingSaveDeletions((prev) => {
         const next = new Set(prev)
-        next.delete(gameId)
+        next.delete(id)
         return next
       })
     }
@@ -1106,35 +1109,45 @@ export function CloudSync(): React.JSX.Element {
                             </div>
                             <div className="flex flex-col gap-1 mt-2 border-t border-red-200 dark:border-red-800 pt-2">
                               {pendingSaveDeletions.map((pending) => {
-                                const processing = processingSaveDeletions.has(pending.gameId)
+                                const processing = processingSaveDeletions.has(pending.id)
                                 return (
-                                  <div
-                                    key={pending.gameId}
-                                    className="flex items-center gap-2 text-xs"
-                                  >
+                                  <div key={pending.id} className="flex items-center gap-2 text-xs">
                                     <span className="flex-1 truncate">
                                       {conflictDisplayName('game', pending.gameId)}
                                     </span>
-                                    <span className="text-muted-foreground whitespace-nowrap">
-                                      {pending.clearsHistory
-                                        ? t('cloudSync.webdav.saveDeletions.itemClearsAll', {
-                                            total: pending.remoteSaveCount
-                                          })
-                                        : t('cloudSync.webdav.saveDeletions.itemPartial', {
-                                            removed: pending.removedCount,
-                                            total: pending.remoteSaveCount
+                                    <div className="flex flex-col flex-1 min-w-0 text-muted-foreground">
+                                      <span>
+                                        {pending.comparisonFailed
+                                          ? t('cloudSync.webdav.saveDeletions.comparisonFailed')
+                                          : pending.clearsHistory
+                                            ? t('cloudSync.webdav.saveDeletions.itemClearsAll', {
+                                                total: pending.remoteSaveCount
+                                              })
+                                            : t('cloudSync.webdav.saveDeletions.itemPartial', {
+                                                removed: pending.removedCount,
+                                                total: pending.remoteSaveCount
+                                              })}
+                                      </span>
+                                      {!pending.comparisonFailed && (
+                                        <span className="break-all text-[10px]">
+                                          {t('cloudSync.webdav.saveDeletions.binding', {
+                                            remoteHash: pending.remoteHash,
+                                            localHash: pending.localHash,
+                                            saveIds: pending.removedSaveIds?.join(', ') || '-'
                                           })}
-                                    </span>
+                                        </span>
+                                      )}
+                                    </div>
                                     {processing ? (
                                       <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                                    ) : (
+                                    ) : pending.comparisonFailed ? null : (
                                       <>
                                         <Button
                                           variant="outline"
                                           size="sm"
                                           className="h-6 px-2 text-xs"
                                           onClick={() =>
-                                            handleSaveDeletionAction(pending.gameId, 'dismiss')
+                                            handleSaveDeletionAction(pending, 'dismiss')
                                           }
                                         >
                                           {t('cloudSync.webdav.saveDeletions.keepCloud')}
@@ -1144,7 +1157,7 @@ export function CloudSync(): React.JSX.Element {
                                           size="sm"
                                           className="h-6 px-2 text-xs"
                                           onClick={() =>
-                                            handleSaveDeletionAction(pending.gameId, 'confirm')
+                                            handleSaveDeletionAction(pending, 'confirm')
                                           }
                                         >
                                           {t('cloudSync.webdav.saveDeletions.confirmDelete')}

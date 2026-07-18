@@ -10,6 +10,7 @@ import {
   getConflictVersions,
   resolveConflict,
   approveSaveDeletion,
+  revokeSaveDeletionApproval,
   forceRestoreGameFromRemote,
   ConflictInfo,
   ForceRestoreResult,
@@ -67,22 +68,83 @@ async function recordSyncConflicts(conflicts: ConflictInfo[]): Promise<void> {
  * and notify the renderer. Each upload-capable sync overwrites the list; an
  * empty result clears it without emitting an event.
  */
-async function recordPendingSaveDeletions(pending: PendingSaveDeletion[]): Promise<void> {
+type PersistedPendingSaveDeletion = Omit<PendingSaveDeletion, 'id' | 'source'> & {
+  id: string
+  source: 'upload' | 'conflict'
+  detectedAt: string
+}
+
+function isPersistedPendingSaveDeletion(value: unknown): value is PersistedPendingSaveDeletion {
+  const pending = value as Partial<PersistedPendingSaveDeletion>
+  return (
+    typeof pending === 'object' &&
+    pending !== null &&
+    typeof pending.id === 'string' &&
+    pending.id.length > 0 &&
+    typeof pending.gameId === 'string' &&
+    typeof pending.removedCount === 'number' &&
+    typeof pending.remoteSaveCount === 'number' &&
+    typeof pending.clearsHistory === 'boolean' &&
+    typeof pending.detectedAt === 'string' &&
+    (pending.source === 'upload' || pending.source === 'conflict')
+  )
+}
+
+async function loadPersistedPendingSaveDeletions(): Promise<PersistedPendingSaveDeletion[]> {
+  const items = await baseDBManager.getValue<unknown>(
+    'config-local',
+    PENDING_SAVE_DELETIONS_DOC_ID,
+    'items',
+    []
+  )
+  // Legacy records lack opaque IDs. They are invalidated rather than gaining
+  // authority after this security upgrade.
+  return Array.isArray(items) ? items.filter(isPersistedPendingSaveDeletion) : []
+}
+
+type PendingSaveDeletionRefresh = { source: 'upload' } | { source: 'conflict'; gameId: string }
+
+/**
+ * Upload sync owns a complete source refresh, while one conflict resolution
+ * may only replace its own game. Otherwise resolving B would erase an
+ * unrelated pending conflict A before the user can confirm or dismiss it.
+ */
+async function recordPendingSaveDeletions(
+  pending: PendingSaveDeletion[],
+  refresh: PendingSaveDeletionRefresh
+): Promise<void> {
   const detectedAt = new Date().toISOString()
-  const items = pending.map((p) => ({
-    gameId: p.gameId,
-    removedCount: p.removedCount,
-    remoteSaveCount: p.remoteSaveCount,
-    clearsHistory: p.clearsHistory,
-    detectedAt
-  }))
+  const previous = await loadPersistedPendingSaveDeletions()
+  const refreshed = pending.map((item) => ({ ...item, detectedAt }))
+  const items = [
+    ...previous.filter((item) => {
+      if (refresh.source === 'upload') return item.source !== 'upload'
+      return !(item.source === 'conflict' && item.gameId === refresh.gameId)
+    }),
+    ...refreshed
+  ]
   await baseDBManager.setValue('config-local', PENDING_SAVE_DELETIONS_DOC_ID, '#all', {
     items,
     updatedAt: detectedAt
   })
-  if (pending.length > 0) {
-    ipcManager.send('db:sync-pending-save-deletions', items)
-  }
+  if (refreshed.length > 0) ipcManager.send('db:sync-pending-save-deletions', items)
+}
+
+async function getPersistedPendingSaveDeletion(
+  pendingId: string
+): Promise<PersistedPendingSaveDeletion | null> {
+  if (typeof pendingId !== 'string' || pendingId.length === 0) return null
+  return (await loadPersistedPendingSaveDeletions()).find((item) => item.id === pendingId) ?? null
+}
+
+async function removePersistedPendingSaveDeletion(pendingId: string): Promise<void> {
+  const items = await loadPersistedPendingSaveDeletions()
+  const remaining = items.filter((item) => item.id !== pendingId)
+  if (remaining.length === items.length) return
+  await baseDBManager.setValue('config-local', PENDING_SAVE_DELETIONS_DOC_ID, '#all', {
+    items: remaining,
+    updatedAt: new Date().toISOString()
+  })
 }
 
 /** Throttled bridge from engine progress callbacks to renderer IPC events. */
@@ -197,10 +259,27 @@ export async function resolveWebdavConflict(
   dbName: string,
   docId: string,
   choice: 'local' | 'remote'
-): Promise<{ success: boolean; message?: string }> {
+): Promise<{
+  success: boolean
+  message?: string
+  status?: 'resolved' | 'pending-save-deletion'
+  pendingSaveDeletion?: PendingSaveDeletion & { detectedAt: string }
+}> {
   try {
     const { adapter, remotePath } = createAdapter(rawConfig)
-    await resolveConflict(adapter, remotePath, dbName, docId, choice)
+    const result = await resolveConflict(adapter, remotePath, dbName, docId, choice)
+    if (result.status === 'pending-save-deletion') {
+      const detectedAt = new Date().toISOString()
+      await recordPendingSaveDeletions([result.pendingSaveDeletion], {
+        source: 'conflict',
+        gameId: docId
+      })
+      return {
+        success: true,
+        status: result.status,
+        pendingSaveDeletion: { ...result.pendingSaveDeletion, detectedAt }
+      }
+    }
   } catch (error: any) {
     log.error(`[WebDAV] Failed to resolve conflict ${dbName}/${docId} (${choice}):`, error)
     return { success: false, message: error?.message || 'Failed to resolve conflict' }
@@ -211,7 +290,7 @@ export async function resolveWebdavConflict(
     // Resolution itself succeeded; a stale list entry is cleared by the next sync
     log.warn('[WebDAV] Failed to update conflict list after resolution:', error)
   }
-  return { success: true }
+  return { success: true, status: 'resolved' as const }
 }
 
 /**
@@ -222,16 +301,37 @@ export async function resolveWebdavConflict(
  */
 export async function confirmWebdavSaveDeletion(
   rawConfig: WebDAVConfig,
-  gameId: string
+  pendingId: string
 ): Promise<{ success: boolean; message?: string }> {
+  const pending = await getPersistedPendingSaveDeletion(pendingId)
+  if (!pending) {
+    return { success: false, message: 'Save deletion confirmation is unknown, expired, or invalid' }
+  }
   try {
     const { adapter, remotePath } = createAdapter(rawConfig)
-    await approveSaveDeletion(gameId)
-    const result = await uploadSnapshot(adapter, remotePath)
-    await recordPendingSaveDeletions(result.pendingSaveDeletions)
+    await approveSaveDeletion(pending)
+    if (pending.source === 'conflict') {
+      const result = await resolveConflict(adapter, remotePath, 'game', pending.gameId, 'local')
+      if (result.status === 'pending-save-deletion') {
+        await recordPendingSaveDeletions([result.pendingSaveDeletion], {
+          source: 'conflict',
+          gameId: pending.gameId
+        })
+        return { success: false, message: 'Save deletion changed; confirmation is required again' }
+      }
+      await removeSyncConflict('game', pending.gameId)
+      await removePersistedPendingSaveDeletion(pending.id)
+    } else {
+      const result = await uploadSnapshot(adapter, remotePath)
+      await recordPendingSaveDeletions(result.pendingSaveDeletions, { source: 'upload' })
+      if (result.pendingSaveDeletions.some((item) => item.gameId === pending.gameId)) {
+        return { success: false, message: 'Save deletion changed; confirmation is required again' }
+      }
+      if (result.errors.length > 0) return { success: false, message: result.errors[0] }
+    }
     return { success: true }
   } catch (error: any) {
-    log.error(`[WebDAV] Failed to confirm save deletion for ${gameId}:`, error)
+    log.error(`[WebDAV] Failed to confirm save deletion ${pendingId}:`, error)
     return { success: false, message: error?.message || 'Failed to confirm save deletion' }
   }
 }
@@ -242,22 +342,18 @@ export async function confirmWebdavSaveDeletion(
  * doc still lacks them the next sync holds the doc back and re-prompts.
  */
 export async function dismissWebdavSaveDeletion(
-  gameId: string
+  pendingId: string
 ): Promise<{ success: boolean; message?: string }> {
+  const pending = await getPersistedPendingSaveDeletion(pendingId)
+  if (!pending) {
+    return { success: false, message: 'Save deletion confirmation is unknown, expired, or invalid' }
+  }
   try {
-    const items = await baseDBManager.getValue<
-      Array<{ gameId: string; removedCount: number; detectedAt: string }>
-    >('config-local', PENDING_SAVE_DELETIONS_DOC_ID, 'items', [])
-    const remaining = items.filter((item) => item.gameId !== gameId)
-    if (remaining.length !== items.length) {
-      await baseDBManager.setValue('config-local', PENDING_SAVE_DELETIONS_DOC_ID, '#all', {
-        items: remaining,
-        updatedAt: new Date().toISOString()
-      })
-    }
+    await revokeSaveDeletionApproval(pending)
+    await removePersistedPendingSaveDeletion(pending.id)
     return { success: true }
   } catch (error: any) {
-    log.error(`[WebDAV] Failed to dismiss save deletion for ${gameId}:`, error)
+    log.error(`[WebDAV] Failed to dismiss save deletion ${pendingId}:`, error)
     return { success: false, message: error?.message || 'Failed to dismiss save deletion' }
   }
 }
@@ -408,7 +504,7 @@ export async function syncViaWebDAV(
   }
   if (direction !== 'download') {
     try {
-      await recordPendingSaveDeletions(result.pendingSaveDeletions)
+      await recordPendingSaveDeletions(result.pendingSaveDeletions, { source: 'upload' })
     } catch (pendingError) {
       log.warn('[WebDAV] Failed to persist pending save deletions:', pendingError)
     }

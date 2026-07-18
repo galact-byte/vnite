@@ -15,6 +15,11 @@ const GAME_ID_MARKER_FILE = '.vnite-game-id'
 const META_FILE_CAP = 5000
 /** 计算目录元数据时的递归深度上限。 */
 const META_MAX_DEPTH = 50
+/**
+ * 元数据遍历的软截止时间。walkFs / fs.stat 不支持取消已开始的 I/O，故这
+ * 只能阻止后续条目继续扫描，不能虚假承诺硬性的 probe 总超时。
+ */
+const META_TRAVERSAL_DEADLINE_MS = 2_000
 /** 命中云端条目却未携带用户决策时抛出的错误码。 */
 export const SAVE_SYNC_NEEDS_RESOLUTION = 'SAVE_SYNC_NEEDS_RESOLUTION'
 
@@ -50,7 +55,8 @@ async function createLink(target: string, linkPath: string, isDirectory: boolean
  * 采集一个存档路径(目录或单文件)的客观元数据,供 R1 冲突弹窗"摆事实"。
  *
  * 目录基于现有 walkFs 递归累加大小/文件数/取最新 mtime;一旦文件数触到
- * META_FILE_CAP,后续条目直接跳过并标记 truncated,避免超大目录阻塞 UI。
+ * META_FILE_CAP 或遍历软截止时间,后续条目直接跳过并标记 truncated,
+ * 避免超大目录阻塞 UI。
  */
 export async function collectPathMeta(targetPath: string): Promise<SaveSyncSideMeta> {
   const stat = await fse.stat(targetPath)
@@ -62,11 +68,19 @@ export async function collectPathMeta(targetPath: string): Promise<SaveSyncSideM
   let fileCount = 0
   let mtimeMs = stat.mtimeMs
   let truncated = false
+  const traversalDeadline = Date.now() + META_TRAVERSAL_DEADLINE_MS
 
   await walkFs(targetPath, {
     maxDepth: META_MAX_DEPTH,
-    // 触顶后让后续条目全部被过滤掉,迫使扫描尽快收束
-    filter: () => !truncated,
+    // 触顶或超时后让后续条目全部被过滤掉,迫使扫描尽快收束。
+    filter: () => {
+      if (truncated) return false
+      if (Date.now() >= traversalDeadline) {
+        truncated = true
+        return false
+      }
+      return true
+    },
     onFile: async (fullPath) => {
       const fileStat = await fse.stat(fullPath).catch(() => null)
       if (!fileStat) return
@@ -77,6 +91,7 @@ export async function collectPathMeta(targetPath: string): Promise<SaveSyncSideM
     }
   })
 
+  if (Date.now() >= traversalDeadline) truncated = true
   return { sizeBytes, mtimeMs, fileCount, truncated }
 }
 
@@ -404,8 +419,12 @@ export async function convertSaveToSyncSpace(
       }
       if (resolution === 'use-cloud') {
         await adoptCloudSave(savePath, existing)
-      } else {
+      } else if (resolution === 'use-local') {
         await adoptLocalSave(savePath, existing)
+      } else {
+        // IPC 入参来自渲染端，运行时不能依赖 TypeScript 联合类型；未知值
+        // 绝不能降级为破坏性的“用本地覆盖云端”。
+        throw new Error(`Invalid save sync resolution: ${String(resolution)}`)
       }
       return
     }

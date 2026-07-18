@@ -162,13 +162,13 @@ export function setupDatabaseIPC(): void {
     }
   )
 
-  ipcManager.handle('db:webdav-confirm-save-deletion', async (_, gameId: string) => {
+  ipcManager.handle('db:webdav-confirm-save-deletion', async (_, pendingId: string) => {
     const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
-    return await confirmWebdavSaveDeletion(config, gameId)
+    return await confirmWebdavSaveDeletion(config, pendingId)
   })
 
-  ipcManager.handle('db:webdav-dismiss-save-deletion', async (_, gameId: string) => {
-    return await dismissWebdavSaveDeletion(gameId)
+  ipcManager.handle('db:webdav-dismiss-save-deletion', async (_, pendingId: string) => {
+    return await dismissWebdavSaveDeletion(pendingId)
   })
 
   ipcManager.handle(

@@ -21,6 +21,22 @@ import {
   PluginStatsData,
   PluginUpdateInfo
 } from './plugin'
+type PendingSaveDeletionPayload = {
+  /** Opaque main-process handle; never reconstruct deletion details in renderer. */
+  id: string
+  gameId: string
+  removedCount: number
+  remoteSaveCount: number
+  clearsHistory: boolean
+  remoteHash?: string
+  localHash?: string
+  removedSaveIds?: string[]
+  source?: 'upload' | 'conflict'
+  comparisonFailed?: boolean
+  error?: string
+  detectedAt: string
+}
+
 import {
   GameDescriptionList,
   GameDevelopersList,
@@ -194,12 +210,17 @@ type MainIpcEvents =
         dbName: string,
         docId: string,
         choice: 'local' | 'remote'
-      ) => { success: boolean; message?: string }
-      'db:webdav-confirm-save-deletion': (gameId: string) => {
+      ) => {
+        success: boolean
+        message?: string
+        status?: 'resolved' | 'pending-save-deletion'
+        pendingSaveDeletion?: PendingSaveDeletionPayload
+      }
+      'db:webdav-confirm-save-deletion': (pendingId: string) => {
         success: boolean
         message?: string
       }
-      'db:webdav-dismiss-save-deletion': (gameId: string) => {
+      'db:webdav-dismiss-save-deletion': (pendingId: string) => {
         success: boolean
         message?: string
       }
@@ -209,7 +230,13 @@ type MainIpcEvents =
       ) => {
         success: boolean
         message?: string
-        status?: 'restored' | 'no-remote' | 'remote-empty' | 'remote-older' | 'blob-missing'
+        status?:
+          | 'restored'
+          | 'no-remote'
+          | 'remote-empty'
+          | 'remote-older'
+          | 'blob-missing'
+          | 'remote-invalid'
         remoteNewest?: string | null
         localNewest?: string | null
         attachmentsDownloaded?: number
@@ -456,15 +483,7 @@ type RendererIpcEvents = {
     { status: 'syncing' | 'success' | 'error'; message: string; timestamp: string }
   ]
   'db:sync-conflicts': [Array<{ docId: string; dbName: string }>]
-  'db:sync-pending-save-deletions': [
-    Array<{
-      gameId: string
-      removedCount: number
-      remoteSaveCount: number
-      clearsHistory: boolean
-      detectedAt: string
-    }>
-  ]
+  'db:sync-pending-save-deletions': [Array<PendingSaveDeletionPayload>]
   'db:sync-progress': [
     { phase: 'download' | 'upload'; database: string; current: number; total: number }
   ]

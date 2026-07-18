@@ -443,6 +443,8 @@
         "description": "Syncing would delete multiple cloud saves (possibly caused by accidental local data loss). Cloud saves are kept until you confirm.",
         "itemPartial": "will delete {{removed}} of {{total}} cloud save(s)",
         "itemClearsAll": "will delete all {{total}} cloud save(s)",
+        "comparisonFailed": "could not safely read the cloud saves; upload is blocked until it can be checked again",
+        "binding": "Remote {{remoteHash}}, local {{localHash}}; saves: {{saveIds}}",
         "keepCloud": "Keep Cloud Saves",
         "confirmDelete": "Delete Cloud Saves",
         "confirmed": "Cloud save deletion confirmed and synced",
