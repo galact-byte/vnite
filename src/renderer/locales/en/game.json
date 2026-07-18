@@ -190,6 +190,22 @@
         "switchSuccess": "Save switched successfully",
         "switchError": "Failed to switch save: {{message}}",
         "noSavePath": "Save path not found"
+      },
+      "forceRestore": {
+        "button": "Force Restore from Cloud",
+        "confirmTitle": "Force restore this game's saves from the cloud?",
+        "confirmDescription": "The cloud (WebDAV) save history will overwrite this game's local save history. The current local save records will be discarded. Other games are not affected.",
+        "confirm": "Force Restore",
+        "olderTitle": "Cloud saves are older than local",
+        "olderDescription": "The newest cloud save ({{remote}}) is older than the newest local save ({{local}}). Overwrite local with the older one?",
+        "confirmOlder": "Overwrite with Older",
+        "noSaves": "No saves",
+        "notifications": {
+          "restored": "Saves for this game were force-restored from the cloud",
+          "noRemote": "The cloud has no save records for this game",
+          "blobMissing": "A cloud save file is missing; restore aborted, local data untouched",
+          "failed": "Force restore failed: {{message}}"
+        }
       }
     },
     "filter": {

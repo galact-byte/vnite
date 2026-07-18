@@ -3,11 +3,21 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from '@ui/alert-dialog'
 import { Button } from '@ui/button'
 import { Input } from '@ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@ui/table'
 import { ipcManager } from '~/app/ipc'
-import { useGameLocalState, useGameState } from '~/hooks'
+import { useConfigLocalState, useGameLocalState, useGameState } from '~/hooks'
 import { cn } from '~/utils'
 import { useGameDetailStore } from '../store'
 
@@ -24,6 +34,57 @@ export function Save({ gameId }: { gameId: string }): React.JSX.Element {
   const [savePaths] = useGameLocalState(gameId, 'path.savePaths')
   const [isBackingUp, setIsBackingUp] = useState(false)
   const hasSavePath = savePaths.some(Boolean)
+  const [syncEnabled] = useConfigLocalState('sync.enabled')
+  const [syncMode] = useConfigLocalState('sync.mode')
+  const webdavSyncActive = syncEnabled && syncMode === 'webdav'
+
+  const [forceRestoreConfirmOpen, setForceRestoreConfirmOpen] = useState(false)
+  const [forceRestoreOlder, setForceRestoreOlder] = useState<{
+    remoteNewest: string | null
+    localNewest: string | null
+  } | null>(null)
+  const [isForceRestoring, setIsForceRestoring] = useState(false)
+
+  const formatSaveDate = (iso: string | null): string =>
+    iso ? t('{{date, niceDateSeconds}}', { date: iso }) : t('detail.save.forceRestore.noSaves')
+
+  async function runForceRestore(confirmedOlder: boolean): Promise<void> {
+    setIsForceRestoring(true)
+    try {
+      const result = await ipcManager.invoke('db:webdav-force-restore-game', gameId, confirmedOlder)
+      if (!result.success) {
+        toast.error(
+          t('detail.save.forceRestore.notifications.failed', { message: result.message ?? '' })
+        )
+        return
+      }
+      switch (result.status) {
+        case 'restored':
+          toast.success(t('detail.save.forceRestore.notifications.restored'))
+          break
+        case 'no-remote':
+          toast.warning(t('detail.save.forceRestore.notifications.noRemote'))
+          break
+        case 'blob-missing':
+          toast.error(t('detail.save.forceRestore.notifications.blobMissing'))
+          break
+        case 'remote-older':
+          setForceRestoreOlder({
+            remoteNewest: result.remoteNewest ?? null,
+            localNewest: result.localNewest ?? null
+          })
+          break
+      }
+    } catch (error) {
+      toast.error(
+        t('detail.save.forceRestore.notifications.failed', {
+          message: error instanceof Error ? error.message : String(error)
+        })
+      )
+    } finally {
+      setIsForceRestoring(false)
+    }
+  }
 
   function backupGameSave(): void {
     if (isBackingUp) {
@@ -105,8 +166,62 @@ export function Save({ gameId }: { gameId: string }): React.JSX.Element {
           >
             {t('detail.save.openPropertiesDialog')}
           </Button>
+          {webdavSyncActive && (
+            <Button
+              variant="outline"
+              onClick={() => setForceRestoreConfirmOpen(true)}
+              disabled={isBackingUp || isForceRestoring}
+            >
+              {t('detail.save.forceRestore.button')}
+            </Button>
+          )}
         </div>
       </div>
+      <AlertDialog open={forceRestoreConfirmOpen} onOpenChange={setForceRestoreConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('detail.save.forceRestore.confirmTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('detail.save.forceRestore.confirmDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('utils:common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => runForceRestore(false)}>
+              {t('detail.save.forceRestore.confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={forceRestoreOlder !== null}
+        onOpenChange={(open) => {
+          if (!open) setForceRestoreOlder(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('detail.save.forceRestore.olderTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('detail.save.forceRestore.olderDescription', {
+                remote: formatSaveDate(forceRestoreOlder?.remoteNewest ?? null),
+                local: formatSaveDate(forceRestoreOlder?.localNewest ?? null)
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('utils:common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setForceRestoreOlder(null)
+                runForceRestore(true)
+              }}
+            >
+              {t('detail.save.forceRestore.confirmOlder')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="w-full h-full">
         <div className={cn('h-full')}>
           <Table className="h-full">

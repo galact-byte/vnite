@@ -190,6 +190,22 @@
         "switchSuccess": "切换存档成功",
         "switchError": "切换存档失败: {{message}}",
         "noSavePath": "未找到存档路径"
+      },
+      "forceRestore": {
+        "button": "从云端强制恢复",
+        "confirmTitle": "以云端为准强制恢复本游戏存档?",
+        "confirmDescription": "将用云端(WebDAV)的存档记录覆盖本游戏的本地存档历史,本地当前的存档记录会被丢弃。不影响其他游戏。",
+        "confirm": "强制恢复",
+        "olderTitle": "云端存档比本地更旧",
+        "olderDescription": "云端最新存档({{remote}})比本地最新存档({{local}})更旧,确认用旧的覆盖本地吗?",
+        "confirmOlder": "用旧存档覆盖",
+        "noSaves": "无存档",
+        "notifications": {
+          "restored": "已从云端强制恢复本游戏存档",
+          "noRemote": "云端没有该游戏的存档记录",
+          "blobMissing": "云端存档文件缺失,已中止恢复,本地未改动",
+          "failed": "强制恢复失败: {{message}}"
+        }
       }
     },
     "filter": {
