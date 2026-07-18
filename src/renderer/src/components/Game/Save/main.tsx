@@ -71,6 +71,9 @@ export function Save({ gameId }: { gameId: string }): React.JSX.Element {
         case 'blob-missing':
           toast.error(t('detail.save.forceRestore.notifications.blobMissing'))
           break
+        case 'remote-invalid':
+          toast.error(t('detail.save.forceRestore.notifications.remoteInvalid'))
+          break
         case 'remote-older':
           setForceRestoreOlder({
             remoteNewest: result.remoteNewest ?? null,

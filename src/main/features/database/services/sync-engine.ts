@@ -39,6 +39,8 @@ export interface ConflictInfo {
  * the deletion (approveSaveDeletion + re-sync) or restores the saves.
  */
 export interface PendingSaveDeletion {
+  /** Stable opaque handle used by renderer IPC; main resolves it from config-local. */
+  id: string
   gameId: string
   /** Number of saves that would be deleted on the remote */
   removedCount: number
@@ -46,6 +48,18 @@ export interface PendingSaveDeletion {
   remoteSaveCount: number
   /** True when the local doc has no saves left at all */
   clearsHistory: boolean
+  /** Remote manifest hash shown to the user when this deletion was detected. */
+  remoteHash?: string
+  /** Local document hash shown to the user when this deletion was detected. */
+  localHash?: string
+  /** Exact remote save IDs that this operation would remove. */
+  removedSaveIds?: string[]
+  /** The destructive path that is waiting for this approval. */
+  source?: 'upload' | 'conflict'
+  /** The remote game doc could not be read, so deletion comparison is unsafe. */
+  comparisonFailed?: boolean
+  /** Diagnostic detail for a failed comparison; never treated as a cancellation. */
+  error?: string
 }
 
 export interface SyncResult {
@@ -60,6 +74,8 @@ export interface SyncResult {
   /** Doc deletions propagated to the remote (tombstones written) this pass */
   deletionsPropagated: number
   pendingSaveDeletions: PendingSaveDeletion[]
+  /** Conflicts that converged without an explicit user resolution this pass. */
+  resolvedConflictCopies: ConflictInfo[]
 }
 
 export interface SyncProgress {
@@ -81,10 +97,20 @@ const LOCK_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 const BASELINE_DOC_ID = 'webdav-sync-baseline'
 const SAVE_DELETION_APPROVALS_DOC_ID = 'webdav-save-deletion-approvals'
 
+interface SaveDeletionApproval {
+  gameId: string
+  remoteHash: string
+  localHash: string
+  removedSaveIds: string[]
+  source: 'upload' | 'conflict'
+}
+
 // Save-deletion guard thresholds: removing more saves than this in one sync
 // round (or clearing a game's entire history) is considered abnormal and
 // requires explicit user approval before the deletion reaches the remote.
 const MAX_SILENT_SAVE_REMOVALS = 1
+/** A content binding for a local game document that no longer exists. */
+const DELETED_GAME_DOC_HASH = 'deleted-game-document'
 
 // Tombstones older than this are garbage-collected from manifest + baseline
 const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
@@ -197,33 +223,118 @@ async function saveBaselineManifest(manifest: Manifest): Promise<void> {
 
 // ─── Save-deletion Approvals ────────────────────────────────────────
 
-async function loadSaveDeletionApprovals(): Promise<Set<string>> {
-  const gameIds = await baseDBManager.getValue<string[]>(
+async function loadSaveDeletionApprovals(): Promise<SaveDeletionApproval[]> {
+  const approvals = await baseDBManager.getValue<unknown>(
     'config-local',
     SAVE_DELETION_APPROVALS_DOC_ID,
-    'gameIds',
+    'approvals',
     []
   )
-  return new Set(gameIds)
+  if (!Array.isArray(approvals)) return []
+
+  // The earlier gameId-only format cannot safely authorize a destructive
+  // operation, so deliberately ignore it during migration rather than
+  // granting a stale approval to changed content.
+  return approvals.filter(
+    (approval): approval is SaveDeletionApproval =>
+      typeof approval === 'object' &&
+      approval !== null &&
+      typeof (approval as SaveDeletionApproval).gameId === 'string' &&
+      typeof (approval as SaveDeletionApproval).remoteHash === 'string' &&
+      typeof (approval as SaveDeletionApproval).localHash === 'string' &&
+      Array.isArray((approval as SaveDeletionApproval).removedSaveIds) &&
+      ((approval as SaveDeletionApproval).source === 'upload' ||
+        (approval as SaveDeletionApproval).source === 'conflict')
+  )
 }
 
-async function storeSaveDeletionApprovals(gameIds: Set<string>): Promise<void> {
+async function storeSaveDeletionApprovals(approvals: SaveDeletionApproval[]): Promise<void> {
   await baseDBManager.setValue('config-local', SAVE_DELETION_APPROVALS_DOC_ID, '#all', {
-    gameIds: [...gameIds],
+    approvals,
     updatedAt: new Date().toISOString()
   })
 }
 
+function sameSaveIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((saveId, index) => saveId === b[index])
+}
+
+function matchingSaveDeletionApproval(
+  approvals: SaveDeletionApproval[],
+  pending: PendingSaveDeletion
+): number {
+  if (
+    pending.comparisonFailed ||
+    !pending.remoteHash ||
+    !pending.localHash ||
+    !pending.removedSaveIds ||
+    !pending.source
+  ) {
+    return -1
+  }
+  return approvals.findIndex(
+    (approval) =>
+      approval.gameId === pending.gameId &&
+      approval.remoteHash === pending.remoteHash &&
+      approval.localHash === pending.localHash &&
+      approval.source === pending.source &&
+      sameSaveIds(approval.removedSaveIds, pending.removedSaveIds!)
+  )
+}
+
 /**
- * Record user approval for propagating an abnormal save deletion of one game
- * to the remote. Consumed (one-shot) by the next upload phase: approvals are
- * cleared after every upload run, so a later abnormal deletion of the same
- * game prompts again.
+ * Record a one-shot approval for one exact deletion operation. The user sees
+ * hashes and exact IDs indirectly through this pending record; re-reading the
+ * docs before upload makes the approval invalid if either side changed.
  */
-export async function approveSaveDeletion(gameId: string): Promise<void> {
+export async function approveSaveDeletion(pending: PendingSaveDeletion): Promise<void> {
+  if (
+    !pending.id ||
+    pending.comparisonFailed ||
+    !pending.remoteHash ||
+    !pending.localHash ||
+    !pending.removedSaveIds ||
+    !pending.source
+  ) {
+    throw new Error('Cannot approve save deletion until the remote saves can be compared')
+  }
   const approvals = await loadSaveDeletionApprovals()
-  approvals.add(gameId)
-  await storeSaveDeletionApprovals(approvals)
+  const next = approvals.filter(
+    (approval) =>
+      !(
+        approval.gameId === pending.gameId &&
+        approval.remoteHash === pending.remoteHash &&
+        approval.localHash === pending.localHash &&
+        approval.source === pending.source &&
+        sameSaveIds(approval.removedSaveIds, pending.removedSaveIds!)
+      )
+  )
+  next.push({
+    gameId: pending.gameId,
+    remoteHash: pending.remoteHash,
+    localHash: pending.localHash,
+    removedSaveIds: pending.removedSaveIds,
+    source: pending.source
+  })
+  await storeSaveDeletionApprovals(next)
+}
+
+/** A user cancellation revokes only this exact not-yet-consumed operation. */
+export async function revokeSaveDeletionApproval(pending: PendingSaveDeletion): Promise<void> {
+  if (!pending.remoteHash || !pending.localHash || !pending.removedSaveIds || !pending.source)
+    return
+  const approvals = await loadSaveDeletionApprovals()
+  const remaining = approvals.filter(
+    (approval) =>
+      !(
+        approval.gameId === pending.gameId &&
+        approval.remoteHash === pending.remoteHash &&
+        approval.localHash === pending.localHash &&
+        approval.source === pending.source &&
+        sameSaveIds(approval.removedSaveIds, pending.removedSaveIds!)
+      )
+  )
+  if (remaining.length !== approvals.length) await storeSaveDeletionApprovals(remaining)
 }
 
 // ─── Ensure Directory ────────────────────────────────────────────────
@@ -437,6 +548,9 @@ async function extractAndUploadAttachments(
         result.attachmentsUploaded++
       }
 
+      // Keep the byte length in the remote stub: docContentHash includes it,
+      // and older stubs that lacked it are handled conservatively on read.
+      anyAtt.length ??= attBuffer.length
       delete anyAtt.data
       anyAtt.stub = true
       anyAtt._sha256 = attHash
@@ -516,7 +630,14 @@ async function collectReferencedBlobHashes(
       const docPath = remoteDocPath(remotePath, dbName, docId)
       try {
         const content = await adapter.readFile(docPath, 'text')
-        addDocRefs(JSON.parse(content as string))
+        const doc = JSON.parse(content as string)
+        // The manifest is the committed remote snapshot. A partial or
+        // out-of-band doc write must block GC rather than authorizing removal
+        // from its uncommitted attachment set.
+        if (!(await remoteDocMatchesManifestHash(adapter, remotePath, doc, entry.hash))) {
+          throw new Error('doc content hash does not match manifest entry')
+        }
+        addDocRefs(doc)
       } catch (err: any) {
         log.warn(
           `[Sync] Blob GC: cannot read live doc ${dbName}/${docId} (${err?.message}) — skipping GC this round`
@@ -583,12 +704,11 @@ async function gcOrphanBlobs(
  * blob between reference collection and deletion. Best-effort by contract:
  * any failure is logged, returns 0, and never fails the sync.
  *
- * Trigger is conditional (see blobRefsMayHaveChanged): downloads never orphan
- * remote blobs, so a pass that uploaded nothing and propagated no deletions
- * skips GC entirely — this avoids re-reading every live doc + listing
- * attachments/ on each no-op sync (request amplification that trips
- * rate-limited providers like Jianguoyun). A blob orphaned by a pass whose
- * doc upload failed is collected on the next pass that uploads.
+ * Every completed sync runs GC, including a no-op or download-only pass.
+ * This lets clients eventually reclaim pre-existing/legacy orphan blobs
+ * without waiting for an unrelated later upload. The full remote scan is
+ * deliberate: R3 requires that all current live documents participate in the
+ * decision.
  */
 async function gcOrphanAttachments(
   adapter: RemoteStorageAdapter,
@@ -608,20 +728,6 @@ async function gcOrphanAttachments(
     log.warn(`[Sync] Blob GC failed (${err?.message}) — will retry next sync`)
     return 0
   }
-}
-
-/**
- * Remote blob references can only change when this device uploaded a doc
- * (attachment set may have shrunk/changed), uploaded blobs whose doc write
- * then failed, or propagated a doc deletion. Pure downloads never orphan
- * remote blobs, so GC is skipped for those passes.
- */
-function blobRefsMayHaveChanged(uploadResult: SyncResult): boolean {
-  return (
-    uploadResult.uploaded > 0 ||
-    uploadResult.attachmentsUploaded > 0 ||
-    uploadResult.deletionsPropagated > 0
-  )
 }
 
 // ─── Download (three-way merge, tombstone-aware) ─────────────────────
@@ -649,7 +755,8 @@ async function downloadSnapshotInternal(
     attachmentsDownloaded: 0,
     attachmentsPurged: 0,
     deletionsPropagated: 0,
-    pendingSaveDeletions: []
+    pendingSaveDeletions: [],
+    resolvedConflictCopies: []
   }
 
   const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
@@ -755,8 +862,11 @@ async function downloadSnapshotInternal(
 
         if (locallyChanged) {
           if (localHash === remoteEntry.hash) {
-            // Both changed but content converged → adopt as synced
+            // Both changed but content converged → adopt as synced. A previous
+            // pass may have parked a local recovery copy; defer its removal to
+            // the wrapper so multiple docs need only one remote scan + GC.
             newBaselineDB[docId] = { rev: localDoc._rev, hash: localHash as string }
+            result.resolvedConflictCopies.push({ docId, dbName })
             continue
           }
           // True conflict: both sides changed → skip, keep old baseline so the
@@ -830,6 +940,107 @@ function gameSaveIds(doc: any): Set<string> {
   return new Set(Object.keys(saveList))
 }
 
+/**
+ * Compare a local game doc with the current remote document before an
+ * overwrite. A failed read/parse is deliberately represented as pending:
+ * without a trustworthy remote save set, uploading could silently destroy
+ * unknown saves. This helper owns the identical guard for normal uploads and
+ * conflict "keep local" resolution.
+ */
+function pendingSaveDeletionId(
+  gameId: string,
+  remoteHash: string,
+  localHash: string,
+  removedSaveIds: string[],
+  source: 'upload' | 'conflict'
+): string {
+  // Opaque to renderer. Stable while the exact destructive operation stays
+  // stable, so persisted UI state can merge without trusting renderer data.
+  return sha256(stableStringify({ gameId, remoteHash, localHash, removedSaveIds, source }))
+}
+
+async function remoteDocMatchesManifestHash(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  doc: any,
+  manifestHash: string
+): Promise<boolean> {
+  if (docContentHash(doc) === manifestHash) return true
+
+  // Older sync versions wrote attachment stubs without `length`, even though
+  // the corresponding manifest hash included the local attachment length.
+  // Reconstruct that canonical field from the content-addressed blob. Any
+  // missing/unreadable blob keeps this validation false (fail closed).
+  const legacyDoc = JSON.parse(JSON.stringify(doc))
+  for (const attachment of Object.values(legacyDoc._attachments ?? {})) {
+    const att = attachment as any
+    if (typeof att?.length === 'number') continue
+    if (typeof att?._sha256 !== 'string') return false
+    const stat = await adapter.stat(
+      path.posix.join(remotePath, 'attachments', `${att._sha256}.bin`)
+    )
+    if (!stat || stat.isDirectory) return false
+    att.length = stat.size
+  }
+  return docContentHash(legacyDoc) === manifestHash
+}
+
+async function inspectSaveDeletion(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  docId: string,
+  remoteEntry: DocEntry,
+  fullDoc: any | null,
+  localHash: string,
+  source: 'upload' | 'conflict'
+): Promise<PendingSaveDeletion | null> {
+  const failedComparison = (error: unknown): PendingSaveDeletion => ({
+    id: pendingSaveDeletionId(docId, remoteEntry.hash, localHash, [], source),
+    gameId: docId,
+    removedCount: 0,
+    remoteSaveCount: 0,
+    clearsHistory: false,
+    remoteHash: remoteEntry.hash,
+    localHash,
+    removedSaveIds: [],
+    source,
+    comparisonFailed: true,
+    error: error instanceof Error ? error.message : 'unknown remote read error'
+  })
+
+  try {
+    const docPath = remoteDocPath(remotePath, 'game', docId)
+    if (!(await adapter.exists(docPath))) {
+      throw new Error('remote doc file is missing')
+    }
+    const remoteDocContent = await adapter.readFile(docPath, 'text')
+    const remoteDoc = JSON.parse(remoteDocContent as string)
+    // The manifest commits to the exact remote JSON. A mismatched doc may be
+    // stale or tampered, so it must never authorize destructive propagation.
+    if (!(await remoteDocMatchesManifestHash(adapter, remotePath, remoteDoc, remoteEntry.hash))) {
+      throw new Error('remote doc content hash does not match manifest entry')
+    }
+    const remoteSaveIds = gameSaveIds(remoteDoc)
+    const localSaveIds = gameSaveIds(fullDoc)
+    const removedSaveIds = [...remoteSaveIds].filter((saveId) => !localSaveIds.has(saveId)).sort()
+    const clearsHistory = localSaveIds.size === 0 && remoteSaveIds.size > 0
+    if (removedSaveIds.length <= MAX_SILENT_SAVE_REMOVALS && !clearsHistory) return null
+    return {
+      id: pendingSaveDeletionId(docId, remoteEntry.hash, localHash, removedSaveIds, source),
+      gameId: docId,
+      removedCount: removedSaveIds.length,
+      remoteSaveCount: remoteSaveIds.size,
+      clearsHistory,
+      remoteHash: remoteEntry.hash,
+      localHash,
+      removedSaveIds,
+      source
+    }
+  } catch (error) {
+    return failedComparison(error)
+  }
+}
+
 // ─── Upload (three-way merge, tombstone-aware) ───────────────────────
 
 /**
@@ -854,7 +1065,8 @@ async function uploadSnapshotInternal(
     attachmentsDownloaded: 0,
     attachmentsPurged: 0,
     deletionsPropagated: 0,
-    pendingSaveDeletions: []
+    pendingSaveDeletions: [],
+    resolvedConflictCopies: []
   }
 
   const localManifest = await buildLocalManifest(deviceId)
@@ -870,6 +1082,7 @@ async function uploadSnapshotInternal(
 
   const newBaselineDatabases = cloneManifestDatabases(baseline)
   const newRemoteDatabases = cloneManifestDatabases(remoteManifest)
+  const consumedSaveDeletionApprovals = new Set<number>()
   let remoteManifestDirty = false
 
   for (const dbName of SYNCABLE_DATABASES) {
@@ -916,6 +1129,39 @@ async function uploadSnapshotInternal(
           continue
         }
 
+        // Whole game-doc deletion removes its entire save history. It must
+        // pass the same exact R4 approval as an in-place overwrite; otherwise
+        // a local DB loss could silently tombstone remote saves and GC blobs.
+        let approvalIndex = -1
+        if (dbName === 'game' && isLiveEntry(remoteEntry)) {
+          const pending = await inspectSaveDeletion(
+            adapter,
+            remotePath,
+            docId,
+            remoteEntry,
+            null,
+            DELETED_GAME_DOC_HASH,
+            'upload'
+          )
+          if (pending) {
+            approvalIndex = matchingSaveDeletionApproval(saveDeletionApprovals, pending)
+            if (approvalIndex < 0) {
+              result.pendingSaveDeletions.push(pending)
+              if (pending.comparisonFailed) {
+                result.errors.push(
+                  `${dbName}/${docId}: cannot compare remote saves; deletion held (${pending.error})`
+                )
+              } else {
+                log.warn(
+                  `[Sync] Held back deletion of ${docId}: would delete ${pending.removedCount} remote saves ` +
+                    '(awaiting user confirmation)'
+                )
+              }
+              continue
+            }
+          }
+        }
+
         // Local deletion vs unchanged remote (or remote already gone)
         // → propagate deletion: remove remote doc file, write tombstone.
         try {
@@ -933,6 +1179,7 @@ async function uploadSnapshotInternal(
           newBaselineDB[docId] = { ...tombstone }
           remoteManifestDirty = true
           result.deletionsPropagated++
+          if (approvalIndex >= 0) consumedSaveDeletionApprovals.add(approvalIndex)
         } catch (err: any) {
           result.errors.push(`${dbName}/${docId}: failed to delete on remote (${err?.message})`)
         }
@@ -962,8 +1209,11 @@ async function uploadSnapshotInternal(
       if (isLiveEntry(remoteEntry) && remotelyChanged) {
         if (remoteEntry.hash === localEntry.hash) {
           // Content converged (e.g. cold start with identical data, or the
-          // same edit made on both sides) → adopt as synced, nothing to upload
+          // same edit made on both sides) → adopt as synced, nothing to upload.
+          // Any parked recovery copies are no longer needed, but cleanup is
+          // batched by the mutex+lock wrapper after this whole pass completes.
           newBaselineDB[docId] = { rev: localEntry.rev, hash: localEntry.hash }
+          result.resolvedConflictCopies.push({ docId, dbName })
           continue
         }
 
@@ -1004,50 +1254,38 @@ async function uploadSnapshotInternal(
         const fullDoc = await db.get(docId, { attachments: true, binary: true })
 
         // ── Save-deletion guard (game docs only) ──
-        // Overwriting a live remote game doc destroys any saves the remote
-        // has that the local doc no longer lists. A single removal is normal
-        // churn (maxBackups eviction / manual delete of one save) and passes
-        // silently; removing ≥2 saves or clearing the game's entire history
-        // is abnormal (typically local data loss) and is held back until the
-        // user explicitly approves it. While held, neither the remote doc nor
-        // baseline/manifest advance, so the doc is re-evaluated every sync.
+        // This is fail-closed: a read/parse failure means we cannot prove that
+        // an overwrite is safe, therefore neither doc nor baseline advances.
+        let approvalIndex = -1
         if (dbName === 'game' && isLiveEntry(remoteEntry)) {
-          try {
-            const docPath = remoteDocPath(remotePath, dbName, docId)
-            if (await adapter.exists(docPath)) {
-              const remoteDocContent = await adapter.readFile(docPath, 'text')
-              const remoteSaveIds = gameSaveIds(JSON.parse(remoteDocContent as string))
-              const localSaveIds = gameSaveIds(fullDoc)
-              let removedCount = 0
-              for (const saveId of remoteSaveIds) {
-                if (!localSaveIds.has(saveId)) removedCount++
+          const pending = await inspectSaveDeletion(
+            adapter,
+            remotePath,
+            docId,
+            remoteEntry,
+            fullDoc,
+            localEntry.hash,
+            'upload'
+          )
+          if (pending) {
+            approvalIndex = matchingSaveDeletionApproval(saveDeletionApprovals, pending)
+            if (approvalIndex < 0) {
+              result.pendingSaveDeletions.push(pending)
+              if (pending.comparisonFailed) {
+                result.errors.push(
+                  `${dbName}/${docId}: cannot compare remote saves; upload held (${pending.error})`
+                )
+              } else {
+                log.warn(
+                  `[Sync] Held back upload of ${docId}: would delete ${pending.removedCount} of ` +
+                    `${pending.remoteSaveCount} remote saves (awaiting user confirmation)`
+                )
               }
-              const clearsHistory = localSaveIds.size === 0 && remoteSaveIds.size > 0
-              if (removedCount > MAX_SILENT_SAVE_REMOVALS || clearsHistory) {
-                if (saveDeletionApprovals.has(docId)) {
-                  log.info(
-                    `[Sync] Approved save deletion for ${docId} (${removedCount} saves) — propagating`
-                  )
-                } else {
-                  result.pendingSaveDeletions.push({
-                    gameId: docId,
-                    removedCount,
-                    remoteSaveCount: remoteSaveIds.size,
-                    clearsHistory
-                  })
-                  log.warn(
-                    `[Sync] Held back upload of ${docId}: would delete ${removedCount} of ` +
-                      `${remoteSaveIds.size} remote saves (awaiting user confirmation)`
-                  )
-                  continue
-                }
-              }
+              continue
             }
-          } catch (guardErr: any) {
-            // Fail open: an unreadable remote doc must not block the upload
-            // forever — worst case a deletion propagates unprompted, same as
-            // before this guard existed.
-            log.warn(`[Sync] Save-deletion guard failed for ${docId}:`, guardErr?.message)
+            log.info(
+              `[Sync] Approved save deletion for ${docId} (${pending.removedCount} saves) — propagating`
+            )
           }
         }
 
@@ -1066,16 +1304,11 @@ async function uploadSnapshotInternal(
         newRemoteDB[docId] = { ...newEntry }
         newBaselineDB[docId] = { ...newEntry }
         remoteManifestDirty = true
+        if (approvalIndex >= 0) consumedSaveDeletionApprovals.add(approvalIndex)
       } catch (err: any) {
         result.errors.push(`${dbName}/${docId}: upload failed (${err?.message})`)
       }
     }
-  }
-
-  // Approvals are one-shot: clear them after every upload run so a later
-  // abnormal deletion (same game or not) prompts the user again.
-  if (saveDeletionApprovals.size > 0) {
-    await storeSaveDeletionApprovals(new Set())
   }
 
   // GC expired tombstones from both the outgoing remote manifest and the new
@@ -1096,6 +1329,15 @@ async function uploadSnapshotInternal(
     await adapter.writeFile(manifestPath, JSON.stringify(updatedManifest), {
       contentType: 'application/json'
     })
+  }
+
+  // An approval is consumed only after the matching upload and its manifest
+  // update completed. Failed, stale, or unrelated approvals remain unusable
+  // until their exact operation is retried or superseded by a fresh approval.
+  if (consumedSaveDeletionApprovals.size > 0) {
+    await storeSaveDeletionApprovals(
+      saveDeletionApprovals.filter((_, index) => !consumedSaveDeletionApprovals.has(index))
+    )
   }
 
   await saveBaselineManifest({
@@ -1120,7 +1362,10 @@ export async function uploadSnapshot(
     await acquireLock(adapter, remotePath, deviceId)
     try {
       const result = await uploadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
-      result.attachmentsPurged = blobRefsMayHaveChanged(result)
+      await removeResolvedConflictCopies(adapter, remotePath, result.resolvedConflictCopies)
+      result.attachmentsPurged = !result.pendingSaveDeletions.some(
+        (pending) => pending.comparisonFailed
+      )
         ? await gcOrphanAttachments(adapter, remotePath)
         : 0
       return result
@@ -1139,7 +1384,10 @@ export async function downloadSnapshot(
     const deviceId = await getDeviceId()
     await acquireLock(adapter, remotePath, deviceId)
     try {
-      return await downloadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+      const result = await downloadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+      await removeResolvedConflictCopies(adapter, remotePath, result.resolvedConflictCopies)
+      result.attachmentsPurged = await gcOrphanAttachments(adapter, remotePath)
+      return result
     } finally {
       await releaseLock(adapter, remotePath, deviceId)
     }
@@ -1178,7 +1426,8 @@ function emptySyncResult(): SyncResult {
     attachmentsDownloaded: 0,
     attachmentsPurged: 0,
     deletionsPropagated: 0,
-    pendingSaveDeletions: []
+    pendingSaveDeletions: [],
+    resolvedConflictCopies: []
   }
 }
 
@@ -1236,23 +1485,33 @@ export async function getConflictVersions(
  * running sync. On any failure the baseline is left untouched, so the
  * conflict keeps being re-reported by subsequent syncs.
  */
+export type ResolveConflictResult =
+  | { status: 'resolved'; attachmentsPurged: number }
+  | { status: 'pending-save-deletion'; pendingSaveDeletion: PendingSaveDeletion }
+
 export async function resolveConflict(
   adapter: RemoteStorageAdapter,
   remotePath: string,
   dbName: string,
   docId: string,
   choice: 'local' | 'remote'
-): Promise<void> {
+): Promise<ResolveConflictResult> {
   assertSyncableDatabase(dbName)
   return withSyncMutex(async () => {
     const deviceId = await getDeviceId()
     await acquireLock(adapter, remotePath, deviceId)
     try {
       if (choice === 'local') {
-        await resolveConflictKeepLocal(adapter, remotePath, deviceId, dbName, docId)
-      } else {
-        await resolveConflictUseRemote(adapter, remotePath, deviceId, dbName, docId)
+        return await resolveConflictKeepLocal(adapter, remotePath, deviceId, dbName, docId)
       }
+      const attachmentsPurged = await resolveConflictUseRemote(
+        adapter,
+        remotePath,
+        deviceId,
+        dbName,
+        docId
+      )
+      return { status: 'resolved', attachmentsPurged }
     } finally {
       await releaseLock(adapter, remotePath, deviceId)
     }
@@ -1265,7 +1524,7 @@ async function resolveConflictKeepLocal(
   deviceId: string,
   dbName: string,
   docId: string
-): Promise<void> {
+): Promise<ResolveConflictResult> {
   const db = baseDBManager.getRawDatabase(dbName)
 
   let fullDoc: any
@@ -1274,42 +1533,64 @@ async function resolveConflictKeepLocal(
   } catch {
     throw new Error(`Local doc ${dbName}/${docId} no longer exists; run a sync instead`)
   }
+  const localHash = docContentHash(fullDoc)
 
-  // Attachment counters are not surfaced for a single-doc resolution
-  const docClone = await extractAndUploadAttachments(
-    adapter,
-    remotePath,
-    fullDoc,
-    emptySyncResult()
-  )
+  // Read the manifest and game document under the same mutex + remote lock
+  // before writing anything. This is both the R4 guard and the TOCTOU check
+  // for a content-bound user authorization.
+  const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
+  if (!(await adapter.exists(manifestPath))) {
+    throw new Error('Remote manifest missing; run a sync instead')
+  }
+  const manifestContent = await adapter.readFile(manifestPath, 'text')
+  const remoteManifest: Manifest = JSON.parse(manifestContent as string)
+  const remoteEntry = remoteManifest.databases?.[dbName]?.[docId]
+  if (!isLiveEntry(remoteEntry)) {
+    throw new Error(`Remote version of ${dbName}/${docId} no longer exists; run a sync instead`)
+  }
 
+  let approvalIndex = -1
+  let approvals: SaveDeletionApproval[] = []
+  if (dbName === 'game') {
+    const pending = await inspectSaveDeletion(
+      adapter,
+      remotePath,
+      docId,
+      remoteEntry,
+      fullDoc,
+      localHash,
+      'conflict'
+    )
+    if (pending) {
+      approvals = await loadSaveDeletionApprovals()
+      approvalIndex = matchingSaveDeletionApproval(approvals, pending)
+      if (approvalIndex < 0) {
+        return { status: 'pending-save-deletion', pendingSaveDeletion: pending }
+      }
+    }
+  }
+
+  const attachmentResult = emptySyncResult()
+  const docClone = await extractAndUploadAttachments(adapter, remotePath, fullDoc, attachmentResult)
   const docDir = path.posix.join(remotePath, 'docs', dbName)
   await ensureDirRecursive(adapter, docDir)
   await adapter.writeFile(remoteDocPath(remotePath, dbName, docId), JSON.stringify(docClone), {
     contentType: 'application/json'
   })
 
-  const newEntry: DocEntry = { rev: fullDoc._rev, hash: docContentHash(fullDoc) }
-
-  // Advance the remote manifest before the baseline: if the manifest write
-  // fails the baseline stays put and the conflict remains visible.
-  const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
-  let remoteManifest: Manifest | null = null
-  if (await adapter.exists(manifestPath)) {
-    const manifestContent = await adapter.readFile(manifestPath, 'text')
-    remoteManifest = JSON.parse(manifestContent as string)
-  }
+  const newEntry: DocEntry = { rev: fullDoc._rev, hash: localHash }
   const newRemoteDatabases = cloneManifestDatabases(remoteManifest)
   newRemoteDatabases[dbName][docId] = { ...newEntry }
-  const updatedManifest: Manifest = {
-    version: '2.0',
-    deviceId,
-    lastSync: new Date().toISOString(),
-    databases: newRemoteDatabases
-  }
-  await adapter.writeFile(manifestPath, JSON.stringify(updatedManifest), {
-    contentType: 'application/json'
-  })
+  await adapter.writeFile(
+    manifestPath,
+    JSON.stringify({
+      version: '2.0',
+      deviceId,
+      lastSync: new Date().toISOString(),
+      databases: newRemoteDatabases
+    } satisfies Manifest),
+    { contentType: 'application/json' }
+  )
 
   const baseline = await loadBaselineManifest()
   const newBaselineDatabases = cloneManifestDatabases(baseline)
@@ -1320,6 +1601,61 @@ async function resolveConflictKeepLocal(
     lastSync: new Date().toISOString(),
     databases: newBaselineDatabases
   })
+
+  // The authorization is consumed only after its exact remote overwrite and
+  // manifest/baseline updates completed. The remote lock still protects GC.
+  if (approvalIndex >= 0) {
+    await storeSaveDeletionApprovals(approvals.filter((_, index) => index !== approvalIndex))
+  }
+  return {
+    status: 'resolved',
+    attachmentsPurged: await removeResolvedConflictCopiesAndGc(adapter, remotePath, dbName, docId)
+  }
+}
+
+/**
+ * Remove every parked recovery copy for the supplied resolved documents.
+ * Returns false on any failure so callers never GC blobs that may still be
+ * referenced by an undeleted copy. One directory listing batches all docs
+ * that converged in the same sync pass.
+ */
+async function removeResolvedConflictCopies(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  resolved: readonly ConflictInfo[]
+): Promise<boolean> {
+  if (resolved.length === 0) return false
+  const prefixes = new Set(
+    resolved.map(({ dbName, docId }) => `${dbName}__${encodeURIComponent(docId)}__`)
+  )
+  const conflictDir = path.posix.join(remotePath, 'conflicts')
+  try {
+    if (!(await adapter.exists(conflictDir))) return true
+    for (const item of await adapter.list(conflictDir)) {
+      if (
+        !item.isDirectory &&
+        item.name.endsWith('.json') &&
+        [...prefixes].some((prefix) => item.name.startsWith(prefix))
+      ) {
+        await adapter.deleteFile(path.posix.join(conflictDir, item.name))
+      }
+    }
+    return true
+  } catch (error) {
+    log.warn('[Sync] Failed to remove resolved conflict copies:', error)
+    return false
+  }
+}
+
+/** Explicit resolution has one doc; use the same batched cleanup primitive. */
+async function removeResolvedConflictCopiesAndGc(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  dbName: string,
+  docId: string
+): Promise<number> {
+  const removed = await removeResolvedConflictCopies(adapter, remotePath, [{ dbName, docId }])
+  return removed ? await gcOrphanAttachments(adapter, remotePath) : 0
 }
 
 async function resolveConflictUseRemote(
@@ -1328,7 +1664,7 @@ async function resolveConflictUseRemote(
   deviceId: string,
   dbName: string,
   docId: string
-): Promise<void> {
+): Promise<number> {
   const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
   if (!(await adapter.exists(manifestPath))) {
     throw new Error('Remote manifest missing; run a sync instead')
@@ -1373,12 +1709,19 @@ async function resolveConflictUseRemote(
     lastSync: new Date().toISOString(),
     databases: newBaselineDatabases
   })
+  return await removeResolvedConflictCopiesAndGc(adapter, remotePath, dbName, docId)
 }
 
 // ─── Force Restore One Game From Remote (R2) ────────────────────────
 
 export interface ForceRestoreResult {
-  status: 'restored' | 'no-remote' | 'remote-empty' | 'remote-older' | 'blob-missing'
+  status:
+    | 'restored'
+    | 'no-remote'
+    | 'remote-empty'
+    | 'remote-older'
+    | 'blob-missing'
+    | 'remote-invalid'
   /** ISO date of the newest remote save (null when the remote doc has none) */
   remoteNewest?: string | null
   /** ISO date of the newest local save (null when the local doc has none) */
@@ -1443,7 +1786,19 @@ export async function forceRestoreGameFromRemote(
       const docPath = remoteDocPath(remotePath, 'game', gameId)
       if (!(await adapter.exists(docPath))) return { status: 'no-remote' }
       const docContent = await adapter.readFile(docPath, 'text')
-      const doc = JSON.parse(docContent as string)
+      let doc: any
+      try {
+        doc = JSON.parse(docContent as string)
+        // The manifest is the remote snapshot's commit record. Never import a
+        // doc that differs from its committed hash: it could be a partial write
+        // or out-of-band tampering. This precedes every local/baseline/blob
+        // mutation, and shares the legacy stub-length compatibility used by R4.
+        if (!(await remoteDocMatchesManifestHash(adapter, remotePath, doc, remoteEntry.hash))) {
+          return { status: 'remote-invalid' }
+        }
+      } catch {
+        return { status: 'remote-invalid' }
+      }
 
       const db = baseDBManager.getRawDatabase('game')
       let localDoc: any = null
@@ -1533,14 +1888,21 @@ export async function syncBidirectional(
         attachmentsDownloaded: dlResult.attachmentsDownloaded,
         attachmentsPurged: 0,
         deletionsPropagated: ulResult.deletionsPropagated,
-        pendingSaveDeletions: [...ulResult.pendingSaveDeletions]
+        pendingSaveDeletions: [...ulResult.pendingSaveDeletions],
+        resolvedConflictCopies: [
+          ...dlResult.resolvedConflictCopies,
+          ...ulResult.resolvedConflictCopies
+        ]
       }
       for (const c of ulResult.conflicts) {
         if (!result.conflicts.some((e) => e.docId === c.docId && e.dbName === c.dbName)) {
           result.conflicts.push(c)
         }
       }
-      result.attachmentsPurged = blobRefsMayHaveChanged(ulResult)
+      await removeResolvedConflictCopies(adapter, remotePath, result.resolvedConflictCopies)
+      result.attachmentsPurged = !ulResult.pendingSaveDeletions.some(
+        (pending) => pending.comparisonFailed
+      )
         ? await gcOrphanAttachments(adapter, remotePath)
         : 0
       return result

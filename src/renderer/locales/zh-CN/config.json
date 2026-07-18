@@ -443,6 +443,8 @@
         "description": "本次同步将删除多个云端存档(可能由本地误删/丢失引起),云端存档已保留,需你确认后才会删除。",
         "itemPartial": "将删除 {{total}} 个云端存档中的 {{removed}} 个",
         "itemClearsAll": "将删除全部 {{total}} 个云端存档",
+        "comparisonFailed": "无法安全读取云端存档，已阻止上传；请在恢复可读取后重试",
+        "binding": "远端 {{remoteHash}}，本地 {{localHash}}；待删除存档：{{saveIds}}",
         "keepCloud": "保留云端存档",
         "confirmDelete": "删除云端存档",
         "confirmed": "已确认删除并同步",

@@ -205,6 +205,7 @@
           "noRemote": "The cloud has no save records for this game",
           "remoteEmpty": "The cloud copy of this game has no saves to restore; local data untouched",
           "blobMissing": "A cloud save file is missing; restore aborted, local data untouched",
+          "remoteInvalid": "The cloud save record no longer matches its committed snapshot; restore aborted, local data untouched",
           "failed": "Force restore failed: {{message}}"
         }
       }

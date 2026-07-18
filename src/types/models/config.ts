@@ -369,10 +369,17 @@ export interface configLocalDocs {
   }
   'webdav-pending-save-deletions': {
     items: Array<{
+      id: string
       gameId: string
       removedCount: number
       remoteSaveCount: number
       clearsHistory: boolean
+      remoteHash?: string
+      localHash?: string
+      removedSaveIds?: string[]
+      source?: 'upload' | 'conflict'
+      comparisonFailed?: boolean
+      error?: string
       detectedAt: string
     }>
     updatedAt: string
@@ -676,10 +683,17 @@ export const DEFAULT_CONFIG_LOCAL_VALUES: Readonly<configLocalDocs> = {
   },
   'webdav-pending-save-deletions': {
     items: [] as Array<{
+      id: string
       gameId: string
       removedCount: number
       remoteSaveCount: number
       clearsHistory: boolean
+      remoteHash?: string
+      localHash?: string
+      removedSaveIds?: string[]
+      source?: 'upload' | 'conflict'
+      comparisonFailed?: boolean
+      error?: string
       detectedAt: string
     }>,
     updatedAt: ''
