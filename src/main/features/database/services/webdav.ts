@@ -9,8 +9,10 @@ import {
   syncBidirectional,
   getConflictVersions,
   resolveConflict,
+  approveSaveDeletion,
   ConflictInfo,
   Manifest,
+  PendingSaveDeletion,
   SyncProgress,
   SyncProgressCallback,
   SyncResult
@@ -38,6 +40,7 @@ export interface WebDAVSyncOptions {
 }
 
 const CONFLICTS_DOC_ID = 'webdav-sync-conflicts'
+const PENDING_SAVE_DELETIONS_DOC_ID = 'webdav-pending-save-deletions'
 const PROGRESS_THROTTLE_DOCS = 10
 
 /**
@@ -54,6 +57,29 @@ async function recordSyncConflicts(conflicts: ConflictInfo[]): Promise<void> {
   })
   if (conflicts.length > 0) {
     ipcManager.send('db:sync-conflicts', conflicts)
+  }
+}
+
+/**
+ * Persist the held-back save deletions (config-local, surviving restarts)
+ * and notify the renderer. Each upload-capable sync overwrites the list; an
+ * empty result clears it without emitting an event.
+ */
+async function recordPendingSaveDeletions(pending: PendingSaveDeletion[]): Promise<void> {
+  const detectedAt = new Date().toISOString()
+  const items = pending.map((p) => ({
+    gameId: p.gameId,
+    removedCount: p.removedCount,
+    remoteSaveCount: p.remoteSaveCount,
+    clearsHistory: p.clearsHistory,
+    detectedAt
+  }))
+  await baseDBManager.setValue('config-local', PENDING_SAVE_DELETIONS_DOC_ID, '#all', {
+    items,
+    updatedAt: detectedAt
+  })
+  if (pending.length > 0) {
+    ipcManager.send('db:sync-pending-save-deletions', items)
   }
 }
 
@@ -187,6 +213,54 @@ export async function resolveWebdavConflict(
 }
 
 /**
+ * User confirmed propagating an abnormal save deletion for one game:
+ * record a one-shot approval and re-run the upload phase so the held-back
+ * doc (and the deletion) reaches the remote. The refreshed pending list is
+ * persisted from the upload result.
+ */
+export async function confirmWebdavSaveDeletion(
+  rawConfig: WebDAVConfig,
+  gameId: string
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const { adapter, remotePath } = createAdapter(rawConfig)
+    await approveSaveDeletion(gameId)
+    const result = await uploadSnapshot(adapter, remotePath)
+    await recordPendingSaveDeletions(result.pendingSaveDeletions)
+    return { success: true }
+  } catch (error: any) {
+    log.error(`[WebDAV] Failed to confirm save deletion for ${gameId}:`, error)
+    return { success: false, message: error?.message || 'Failed to confirm save deletion' }
+  }
+}
+
+/**
+ * User chose to keep the cloud saves: drop the entry from the pending list.
+ * Nothing is uploaded — the remote keeps its saves, and as long as the local
+ * doc still lacks them the next sync holds the doc back and re-prompts.
+ */
+export async function dismissWebdavSaveDeletion(
+  gameId: string
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const items = await baseDBManager.getValue<
+      Array<{ gameId: string; removedCount: number; detectedAt: string }>
+    >('config-local', PENDING_SAVE_DELETIONS_DOC_ID, 'items', [])
+    const remaining = items.filter((item) => item.gameId !== gameId)
+    if (remaining.length !== items.length) {
+      await baseDBManager.setValue('config-local', PENDING_SAVE_DELETIONS_DOC_ID, '#all', {
+        items: remaining,
+        updatedAt: new Date().toISOString()
+      })
+    }
+    return { success: true }
+  } catch (error: any) {
+    log.error(`[WebDAV] Failed to dismiss save deletion for ${gameId}:`, error)
+    return { success: false, message: error?.message || 'Failed to dismiss save deletion' }
+  }
+}
+
+/**
  * Test WebDAV connection by attempting to list the root directory.
  */
 export async function testWebDAVConnection(
@@ -306,6 +380,13 @@ export async function syncViaWebDAV(
     await recordSyncConflicts(result.conflicts)
   } catch (conflictError) {
     log.warn('[WebDAV] Failed to persist conflict list:', conflictError)
+  }
+  if (direction !== 'download') {
+    try {
+      await recordPendingSaveDeletions(result.pendingSaveDeletions)
+    } catch (pendingError) {
+      log.warn('[WebDAV] Failed to persist pending save deletions:', pendingError)
+    }
   }
   await writeWebdavStatus(attemptAt, result)
 

@@ -367,6 +367,16 @@ export interface configLocalDocs {
     items: Array<{ dbName: string; docId: string; detectedAt: string }>
     updatedAt: string
   }
+  'webdav-pending-save-deletions': {
+    items: Array<{
+      gameId: string
+      removedCount: number
+      remoteSaveCount: number
+      clearsHistory: boolean
+      detectedAt: string
+    }>
+    updatedAt: string
+  }
   toolbox: {
     tools: {
       [id: string]: {
@@ -662,6 +672,16 @@ export const DEFAULT_CONFIG_LOCAL_VALUES: Readonly<configLocalDocs> = {
   },
   'webdav-sync-conflicts': {
     items: [],
+    updatedAt: ''
+  },
+  'webdav-pending-save-deletions': {
+    items: [] as Array<{
+      gameId: string
+      removedCount: number
+      remoteSaveCount: number
+      clearsHistory: boolean
+      detectedAt: string
+    }>,
     updatedAt: ''
   },
   toolbox: {

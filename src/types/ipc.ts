@@ -195,6 +195,14 @@ type MainIpcEvents =
         docId: string,
         choice: 'local' | 'remote'
       ) => { success: boolean; message?: string }
+      'db:webdav-confirm-save-deletion': (gameId: string) => {
+        success: boolean
+        message?: string
+      }
+      'db:webdav-dismiss-save-deletion': (gameId: string) => {
+        success: boolean
+        message?: string
+      }
 
       // Game save management events
       'game:search-save-paths': (gameId: string) => string[]
@@ -437,6 +445,15 @@ type RendererIpcEvents = {
     { status: 'syncing' | 'success' | 'error'; message: string; timestamp: string }
   ]
   'db:sync-conflicts': [Array<{ docId: string; dbName: string }>]
+  'db:sync-pending-save-deletions': [
+    Array<{
+      gameId: string
+      removedCount: number
+      remoteSaveCount: number
+      clearsHistory: boolean
+      detectedAt: string
+    }>
+  ]
   'db:sync-progress': [
     { phase: 'download' | 'upload'; database: string; current: number; total: number }
   ]
