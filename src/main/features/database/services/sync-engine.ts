@@ -1349,7 +1349,7 @@ async function resolveConflictUseRemote(
 // ─── Force Restore One Game From Remote (R2) ────────────────────────
 
 export interface ForceRestoreResult {
-  status: 'restored' | 'no-remote' | 'remote-older' | 'blob-missing'
+  status: 'restored' | 'no-remote' | 'remote-empty' | 'remote-older' | 'blob-missing'
   /** ISO date of the newest remote save (null when the remote doc has none) */
   remoteNewest?: string | null
   /** ISO date of the newest local save (null when the local doc has none) */
@@ -1429,10 +1429,14 @@ export async function forceRestoreGameFromRemote(
       // times don't exist, and saves are what this restore is about.
       const remoteNewest = newestSaveDate(doc)
       const localNewest = localDoc ? newestSaveDate(localDoc) : null
+      // Nothing to restore: the remote doc exists but carries no saves at all
+      // (e.g. a confirmed bulk deletion already propagated). Refuse honestly
+      // instead of "restoring" an empty save history and reporting success.
+      if (remoteNewest === null) {
+        return { status: 'remote-empty', remoteNewest, localNewest }
+      }
       if (!opts.confirmedOlder && localNewest !== null) {
-        const remoteIsOlder =
-          remoteNewest === null || Date.parse(remoteNewest) < Date.parse(localNewest)
-        if (remoteIsOlder) {
+        if (Date.parse(remoteNewest) < Date.parse(localNewest)) {
           return { status: 'remote-older', remoteNewest, localNewest }
         }
       }

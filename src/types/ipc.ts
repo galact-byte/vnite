@@ -209,7 +209,7 @@ type MainIpcEvents =
       ) => {
         success: boolean
         message?: string
-        status?: 'restored' | 'no-remote' | 'remote-older' | 'blob-missing'
+        status?: 'restored' | 'no-remote' | 'remote-empty' | 'remote-older' | 'blob-missing'
         remoteNewest?: string | null
         localNewest?: string | null
         attachmentsDownloaded?: number
