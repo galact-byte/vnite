@@ -415,6 +415,7 @@
       "syncing": "Syncing...",
       "syncSuccess": "Sync Successful",
       "syncFailed": "Sync Failed",
+      "syncBusy": "A sync is already in progress (post-game auto upload or scheduled sync); try again shortly",
       "conflictsDetected": "{{count}} sync conflict(s) detected, please resolve manually",
       "conflictsWarning": "{{count}} sync conflict(s) exist. Please resolve in conflict manager before syncing again.",
       "progress": {
