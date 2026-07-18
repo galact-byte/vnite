@@ -203,6 +203,17 @@ type MainIpcEvents =
         success: boolean
         message?: string
       }
+      'db:webdav-force-restore-game': (
+        gameId: string,
+        confirmedOlder?: boolean
+      ) => {
+        success: boolean
+        message?: string
+        status?: 'restored' | 'no-remote' | 'remote-older' | 'blob-missing'
+        remoteNewest?: string | null
+        localNewest?: string | null
+        attachmentsDownloaded?: number
+      }
 
       // Game save management events
       'game:search-save-paths': (gameId: string) => string[]

@@ -10,7 +10,9 @@ import {
   getConflictVersions,
   resolveConflict,
   approveSaveDeletion,
+  forceRestoreGameFromRemote,
   ConflictInfo,
+  ForceRestoreResult,
   Manifest,
   PendingSaveDeletion,
   SyncProgress,
@@ -257,6 +259,29 @@ export async function dismissWebdavSaveDeletion(
   } catch (error: any) {
     log.error(`[WebDAV] Failed to dismiss save deletion for ${gameId}:`, error)
     return { success: false, message: error?.message || 'Failed to dismiss save deletion' }
+  }
+}
+
+/**
+ * R2: force-restore one game's doc + save attachments from the remote,
+ * bypassing the three-way merge for that doc. Destructive for the local
+ * copy; the renderer gates it behind a double confirmation and re-invokes
+ * with `confirmedOlder` when the engine reports 'remote-older'.
+ */
+export async function forceRestoreWebdavGame(
+  rawConfig: WebDAVConfig,
+  gameId: string,
+  confirmedOlder?: boolean
+): Promise<{ success: boolean; message?: string } & Partial<ForceRestoreResult>> {
+  try {
+    const { adapter, remotePath } = createAdapter(rawConfig)
+    const result = await forceRestoreGameFromRemote(adapter, remotePath, gameId, {
+      confirmedOlder
+    })
+    return { success: true, ...result }
+  } catch (error: any) {
+    log.error(`[WebDAV] Force restore of game/${gameId} failed:`, error)
+    return { success: false, message: error?.message || 'Force restore failed' }
   }
 }
 

@@ -1346,6 +1346,138 @@ async function resolveConflictUseRemote(
   })
 }
 
+// ─── Force Restore One Game From Remote (R2) ────────────────────────
+
+export interface ForceRestoreResult {
+  status: 'restored' | 'no-remote' | 'remote-older' | 'blob-missing'
+  /** ISO date of the newest remote save (null when the remote doc has none) */
+  remoteNewest?: string | null
+  /** ISO date of the newest local save (null when the local doc has none) */
+  localNewest?: string | null
+  attachmentsDownloaded?: number
+}
+
+/** Newest `date` across a game doc's save.saveList, or null when empty. */
+function newestSaveDate(doc: any): string | null {
+  const saveList = doc?.save?.saveList
+  if (!saveList || typeof saveList !== 'object') return null
+  let newest: string | null = null
+  for (const save of Object.values(saveList)) {
+    const date = (save as any)?.date
+    if (typeof date !== 'string' || !Number.isFinite(Date.parse(date))) continue
+    if (newest === null || Date.parse(date) > Date.parse(newest)) newest = date
+  }
+  return newest
+}
+
+/**
+ * R2 escape hatch: restore ONE game doc (and its save attachments) from the
+ * remote, bypassing the three-way merge for this doc only. Used when the
+ * local copy is known-bad (e.g. saves were deleted by mistake) and normal
+ * sync would treat the local state as the latest intent.
+ *
+ * Structured refusals instead of exceptions:
+ * - 'no-remote': the remote has no live version of this game.
+ * - 'remote-older': the newest remote save is older than the newest local
+ *   save (or the remote doc has no saves while the local one does). Nothing
+ *   is touched; the caller must re-invoke with `confirmedOlder: true` after
+ *   an explicit user confirmation.
+ * - 'blob-missing': a save blob is gone from the remote; the local doc is
+ *   left untouched so no save is replaced by a dangling stub.
+ *
+ * On success the baseline entry of THIS docId (and no other) is aligned to
+ * the remote manifest entry, so the next sync sees local == baseline ==
+ * remote and neither re-uploads the old state nor reports a conflict.
+ *
+ * Runs under the sync mutex + remote lock, held continuously from the
+ * manifest read through the last blob fetch — the R3 orphan GC also runs
+ * under this lock, so a concurrent GC can never delete a blob between the
+ * doc read and its download.
+ */
+export async function forceRestoreGameFromRemote(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  gameId: string,
+  opts: { confirmedOlder?: boolean } = {}
+): Promise<ForceRestoreResult> {
+  return withSyncMutex(async () => {
+    const deviceId = await getDeviceId()
+    await acquireLock(adapter, remotePath, deviceId)
+    try {
+      const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
+      if (!(await adapter.exists(manifestPath))) return { status: 'no-remote' }
+      const manifestContent = await adapter.readFile(manifestPath, 'text')
+      const remoteManifest: Manifest = JSON.parse(manifestContent as string)
+      const remoteEntry = remoteManifest.databases?.game?.[gameId]
+      if (!isLiveEntry(remoteEntry)) return { status: 'no-remote' }
+
+      const docPath = remoteDocPath(remotePath, 'game', gameId)
+      if (!(await adapter.exists(docPath))) return { status: 'no-remote' }
+      const docContent = await adapter.readFile(docPath, 'text')
+      const doc = JSON.parse(docContent as string)
+
+      const db = baseDBManager.getRawDatabase('game')
+      let localDoc: any = null
+      try {
+        localDoc = await db.get(gameId)
+      } catch {
+        localDoc = null
+      }
+
+      // Timestamp guard: refuse to silently replace newer local saves with
+      // older remote ones. Compares newest save dates only — doc-level edit
+      // times don't exist, and saves are what this restore is about.
+      const remoteNewest = newestSaveDate(doc)
+      const localNewest = localDoc ? newestSaveDate(localDoc) : null
+      if (!opts.confirmedOlder && localNewest !== null) {
+        const remoteIsOlder =
+          remoteNewest === null || Date.parse(remoteNewest) < Date.parse(localNewest)
+        if (remoteIsOlder) {
+          return { status: 'remote-older', remoteNewest, localNewest }
+        }
+      }
+
+      const result = emptySyncResult()
+      if (!(await restoreAttachments(adapter, remotePath, doc, result))) {
+        return { status: 'blob-missing' }
+      }
+
+      if (localDoc) {
+        doc._rev = localDoc._rev
+      } else {
+        delete doc._rev
+      }
+      await db.put(doc)
+
+      // Align ONLY this doc's baseline entry to the remote manifest entry
+      // (same convention as resolveConflictUseRemote): the next three-way
+      // merge sees local == baseline == remote for this doc and is a no-op.
+      const baseline = await loadBaselineManifest()
+      const newBaselineDatabases = cloneManifestDatabases(baseline)
+      newBaselineDatabases.game[gameId] = { ...remoteEntry }
+      await saveBaselineManifest({
+        version: '2.0',
+        deviceId,
+        lastSync: new Date().toISOString(),
+        databases: newBaselineDatabases
+      })
+
+      log.info(
+        `[Sync] Force-restored game/${gameId} from remote ` +
+          `(${result.attachmentsDownloaded} attachment blob(s) downloaded)`
+      )
+      return {
+        status: 'restored',
+        remoteNewest,
+        localNewest,
+        attachmentsDownloaded: result.attachmentsDownloaded
+      }
+    } finally {
+      await releaseLock(adapter, remotePath, deviceId)
+    }
+  })
+}
+
 export async function syncBidirectional(
   adapter: RemoteStorageAdapter,
   remotePath: string,
