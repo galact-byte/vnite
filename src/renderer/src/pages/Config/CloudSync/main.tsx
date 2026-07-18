@@ -1,4 +1,4 @@
-import { cn } from '~/utils'
+import { cn, formatStorageSize } from '~/utils'
 import { isEncryptedPassword } from '@appUtils'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import { Button } from '~/components/ui/button'
@@ -38,6 +38,7 @@ import {
 import { Link } from '~/components/ui/link'
 import { useTranslation } from 'react-i18next'
 import { useCloudSyncStore } from './store'
+import { getPendingSaveDeletionDisplaySaves } from './save-deletion-display'
 import { ROLE_QUOTAS } from '@appTypes/sync'
 import { ConfigItem, ConfigItemPure } from '~/components/form'
 import { Switch } from '~/components/ui/switch'
@@ -138,6 +139,7 @@ export function CloudSync(): React.JSX.Element {
   const [webdavConflicts, setWebdavConflicts] = useConfigLocalState('webdav-sync-conflicts.items')
   const [pendingSaveDeletions] = useConfigLocalState('webdav-pending-save-deletions.items')
   const [processingSaveDeletions, setProcessingSaveDeletions] = useState<Set<string>>(new Set())
+  const [expandedSaveDeletions, setExpandedSaveDeletions] = useState<Set<string>>(new Set())
   const [conflictsExpanded, setConflictsExpanded] = useState(false)
   const [resolvingConflicts, setResolvingConflicts] = useState<Set<string>>(new Set())
   const [conflictDiff, setConflictDiff] = useState<ConflictDiffState | null>(null)
@@ -214,7 +216,15 @@ export function CloudSync(): React.JSX.Element {
           ? await ipcManager.invoke('db:webdav-confirm-save-deletion', id)
           : await ipcManager.invoke('db:webdav-dismiss-save-deletion', id)
       if (result.success) {
-        // The list entry itself is removed by main and arrives via the store
+        // The list entry itself is removed by main and arrives via the store.
+        // Clear its local-only expansion state immediately so a future pending
+        // record cannot inherit UI state from an expired opaque handle.
+        setExpandedSaveDeletions((previous) => {
+          if (!previous.has(id)) return previous
+          const next = new Set(previous)
+          next.delete(id)
+          return next
+        })
         toast.success(
           action === 'confirm'
             ? t('cloudSync.webdav.saveDeletions.confirmed')
@@ -239,6 +249,23 @@ export function CloudSync(): React.JSX.Element {
       })
     }
   }
+
+  const toggleSaveDeletionExpansion = (pendingId: string): void => {
+    setExpandedSaveDeletions((previous) => {
+      const next = new Set(previous)
+      if (next.has(pendingId)) next.delete(pendingId)
+      else next.add(pendingId)
+      return next
+    })
+  }
+
+  useEffect(() => {
+    const activePendingIds = new Set(pendingSaveDeletions.map((pending) => pending.id))
+    setExpandedSaveDeletions((previous) => {
+      const next = new Set([...previous].filter((id) => activePendingIds.has(id)))
+      return next.size === previous.size ? previous : next
+    })
+  }, [pendingSaveDeletions])
 
   const handleViewConflictDiff = async (dbName: string, docId: string): Promise<void> => {
     setConflictDiff({ dbName, docId, loading: true })
@@ -1110,13 +1137,21 @@ export function CloudSync(): React.JSX.Element {
                             <div className="flex flex-col gap-1 mt-2 border-t border-red-200 dark:border-red-800 pt-2">
                               {pendingSaveDeletions.map((pending) => {
                                 const processing = processingSaveDeletions.has(pending.id)
+                                const expanded = expandedSaveDeletions.has(pending.id)
+                                const displaySaves = getPendingSaveDeletionDisplaySaves(
+                                  pending.displaySaves,
+                                  expanded
+                                )
                                 return (
-                                  <div key={pending.id} className="flex items-center gap-2 text-xs">
-                                    <span className="flex-1 truncate">
-                                      {conflictDisplayName('game', pending.gameId)}
-                                    </span>
-                                    <div className="flex flex-col flex-1 min-w-0 text-muted-foreground">
-                                      <span>
+                                  <div
+                                    key={pending.id}
+                                    className="flex flex-col gap-2 py-1 text-xs"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <span className="flex-1 truncate">
+                                        {conflictDisplayName('game', pending.gameId)}
+                                      </span>
+                                      <span className="flex-1 text-muted-foreground">
                                         {pending.comparisonFailed
                                           ? t('cloudSync.webdav.saveDeletions.comparisonFailed')
                                           : pending.clearsHistory
@@ -1128,42 +1163,105 @@ export function CloudSync(): React.JSX.Element {
                                                 total: pending.remoteSaveCount
                                               })}
                                       </span>
-                                      {!pending.comparisonFailed && (
-                                        <span className="break-all text-[10px]">
-                                          {t('cloudSync.webdav.saveDeletions.binding', {
-                                            remoteHash: pending.remoteHash,
-                                            localHash: pending.localHash,
-                                            saveIds: pending.removedSaveIds?.join(', ') || '-'
-                                          })}
-                                        </span>
+                                      {processing ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                                      ) : pending.comparisonFailed ? null : (
+                                        <>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-6 px-2 text-xs"
+                                            onClick={() =>
+                                              handleSaveDeletionAction(pending, 'dismiss')
+                                            }
+                                          >
+                                            {t('cloudSync.webdav.saveDeletions.keepCloud')}
+                                          </Button>
+                                          <Button
+                                            variant="destructive"
+                                            size="sm"
+                                            className="h-6 px-2 text-xs"
+                                            onClick={() =>
+                                              handleSaveDeletionAction(pending, 'confirm')
+                                            }
+                                          >
+                                            {t('cloudSync.webdav.saveDeletions.confirmDelete')}
+                                          </Button>
+                                        </>
                                       )}
                                     </div>
-                                    {processing ? (
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                                    ) : pending.comparisonFailed ? null : (
-                                      <>
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          className="h-6 px-2 text-xs"
-                                          onClick={() =>
-                                            handleSaveDeletionAction(pending, 'dismiss')
-                                          }
-                                        >
-                                          {t('cloudSync.webdav.saveDeletions.keepCloud')}
-                                        </Button>
-                                        <Button
-                                          variant="destructive"
-                                          size="sm"
-                                          className="h-6 px-2 text-xs"
-                                          onClick={() =>
-                                            handleSaveDeletionAction(pending, 'confirm')
-                                          }
-                                        >
-                                          {t('cloudSync.webdav.saveDeletions.confirmDelete')}
-                                        </Button>
-                                      </>
-                                    )}
+                                    {!pending.comparisonFailed &&
+                                      (displaySaves.hasSaves ? (
+                                        <div className="flex flex-col gap-1 pl-2 text-muted-foreground">
+                                          {displaySaves.saves.map((save, index) => {
+                                            const hasValidDate =
+                                              typeof save.date === 'string' &&
+                                              Number.isFinite(Date.parse(save.date))
+                                            const hasNote =
+                                              typeof save.note === 'string' &&
+                                              save.note.trim().length > 0
+                                            const sizeBytes =
+                                              typeof save.sizeBytes === 'number' &&
+                                              Number.isFinite(save.sizeBytes) &&
+                                              save.sizeBytes >= 0
+                                                ? save.sizeBytes
+                                                : null
+                                            return (
+                                              <div
+                                                key={`${pending.id}-${index}`}
+                                                className="grid grid-cols-1 gap-0.5 rounded bg-red-100/40 p-1.5 dark:bg-red-950/20 sm:grid-cols-3 sm:gap-2"
+                                              >
+                                                <span>
+                                                  {t('cloudSync.webdav.saveDeletions.backupTime')}:{' '}
+                                                  {hasValidDate
+                                                    ? t('{{date, niceDateSeconds}}', {
+                                                        date: save.date
+                                                      })
+                                                    : t(
+                                                        'cloudSync.webdav.saveDeletions.backupTimeUnavailable'
+                                                      )}
+                                                </span>
+                                                {hasNote && (
+                                                  <span className="break-words">
+                                                    {t('cloudSync.webdav.saveDeletions.backupNote')}
+                                                    : {save.note}
+                                                  </span>
+                                                )}
+                                                <span>
+                                                  {t('cloudSync.webdav.saveDeletions.backupSize')}:{' '}
+                                                  {sizeBytes !== null
+                                                    ? formatStorageSize(sizeBytes)
+                                                    : t(
+                                                        'cloudSync.webdav.saveDeletions.backupSizeUnavailable'
+                                                      )}
+                                                </span>
+                                              </div>
+                                            )
+                                          })}
+                                          {displaySaves.hasMore && (
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              className="h-6 w-fit px-2 text-xs"
+                                              onClick={() =>
+                                                toggleSaveDeletionExpansion(pending.id)
+                                              }
+                                            >
+                                              {expanded
+                                                ? t('cloudSync.webdav.saveDeletions.collapse')
+                                                : t('cloudSync.webdav.saveDeletions.viewAll', {
+                                                    count: displaySaves.totalCount
+                                                  })}
+                                            </Button>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <span className="pl-2 text-muted-foreground">
+                                          {t(
+                                            'cloudSync.webdav.saveDeletions.backupInfoUnavailable'
+                                          )}
+                                        </span>
+                                      ))}
                                   </div>
                                 )
                               })}

@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import log from 'electron-log/main'
 import { RemoteStorageAdapter } from './sync-adapter/types'
 import { baseDBManager } from '~/core/database'
+import type { PendingSaveDeletionDisplaySave } from '@appTypes/models'
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -48,14 +49,16 @@ export interface PendingSaveDeletion {
   remoteSaveCount: number
   /** True when the local doc has no saves left at all */
   clearsHistory: boolean
-  /** Remote manifest hash shown to the user when this deletion was detected. */
+  /** Remote manifest hash bound to this destructive operation. */
   remoteHash?: string
-  /** Local document hash shown to the user when this deletion was detected. */
+  /** Local document hash bound to this destructive operation. */
   localHash?: string
-  /** Exact remote save IDs that this operation would remove. */
+  /** Exact remote save IDs bound to this destructive operation. */
   removedSaveIds?: string[]
   /** The destructive path that is waiting for this approval. */
   source?: 'upload' | 'conflict'
+  /** Trusted remote snapshot for renderer display only; never authorizes deletion. */
+  displaySaves?: PendingSaveDeletionDisplaySave[]
   /** The remote game doc could not be read, so deletion comparison is unsafe. */
   comparisonFailed?: boolean
   /** Diagnostic detail for a failed comparison; never treated as a cancellation. */
@@ -959,6 +962,35 @@ function pendingSaveDeletionId(
   return sha256(stableStringify({ gameId, remoteHash, localHash, removedSaveIds, source }))
 }
 
+function validAttachmentLength(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+/**
+ * Reads an attachment's declared length, or reconstructs it from its known
+ * content-addressed blob for legacy stubs. This is display/integrity metadata
+ * only; callers must not use it to authorize a destructive operation.
+ */
+async function resolveAttachmentLength(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  attachment: unknown
+): Promise<number | null> {
+  const att = attachment as { length?: unknown; _sha256?: unknown } | null
+  const declaredLength = validAttachmentLength(att?.length)
+  if (declaredLength !== null) return declaredLength
+  if (typeof att?._sha256 !== 'string' || !att._sha256) return null
+
+  try {
+    const stat = await adapter.stat(
+      path.posix.join(remotePath, 'attachments', `${att._sha256}.bin`)
+    )
+    return stat && !stat.isDirectory ? validAttachmentLength(stat.size) : null
+  } catch {
+    return null
+  }
+}
+
 async function remoteDocMatchesManifestHash(
   adapter: RemoteStorageAdapter,
   remotePath: string,
@@ -973,16 +1005,38 @@ async function remoteDocMatchesManifestHash(
   // missing/unreadable blob keeps this validation false (fail closed).
   const legacyDoc = JSON.parse(JSON.stringify(doc))
   for (const attachment of Object.values(legacyDoc._attachments ?? {})) {
-    const att = attachment as any
-    if (typeof att?.length === 'number') continue
-    if (typeof att?._sha256 !== 'string') return false
-    const stat = await adapter.stat(
-      path.posix.join(remotePath, 'attachments', `${att._sha256}.bin`)
-    )
-    if (!stat || stat.isDirectory) return false
-    att.length = stat.size
+    const legacyAttachment = attachment as { length?: unknown }
+    // Preserve the normal hash path for every declared numeric value. Only
+    // legacy stubs that genuinely omit `length` may be reconstructed from a
+    // blob stat; otherwise this compatibility path could mask a changed doc.
+    if (typeof legacyAttachment.length === 'number') continue
+
+    const length = await resolveAttachmentLength(adapter, remotePath, attachment)
+    if (length === null) return false
+    legacyAttachment.length = length
   }
   return docContentHash(legacyDoc) === manifestHash
+}
+
+async function createPendingSaveDeletionDisplaySaves(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  remoteDoc: any,
+  removedSaveIds: string[]
+): Promise<PendingSaveDeletionDisplaySave[]> {
+  const saveList = remoteDoc?.save?.saveList
+  const attachments = remoteDoc?._attachments
+  return Promise.all(
+    removedSaveIds.map(async (saveId) => {
+      const save = saveList?.[saveId]
+      const attachment = attachments?.[`saves/${saveId}.zip`]
+      return {
+        date: typeof save?.date === 'string' ? save.date : null,
+        note: typeof save?.note === 'string' ? save.note : null,
+        sizeBytes: await resolveAttachmentLength(adapter, remotePath, attachment)
+      }
+    })
+  )
 }
 
 async function inspectSaveDeletion(
@@ -1034,7 +1088,13 @@ async function inspectSaveDeletion(
       remoteHash: remoteEntry.hash,
       localHash,
       removedSaveIds,
-      source
+      source,
+      displaySaves: await createPendingSaveDeletionDisplaySaves(
+        adapter,
+        remotePath,
+        remoteDoc,
+        removedSaveIds
+      )
     }
   } catch (error) {
     return failedComparison(error)

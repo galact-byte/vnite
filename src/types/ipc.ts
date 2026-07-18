@@ -10,7 +10,14 @@ import type { SaveSyncProbeResult, SaveSyncResolution } from '@appTypes/sync'
 import { BatchUpdateGameMetadataProgress, OverallScanProgress } from '@appTypes/utils'
 import { ProgressInfo, UpdateCheckResult } from 'electron-updater'
 import type { GameMediaType } from './models'
-import { BatchGameInfo, configDocs, configLocalDocs, gameDoc, GameTimerStatus } from './models'
+import {
+  BatchGameInfo,
+  configDocs,
+  configLocalDocs,
+  gameDoc,
+  GameTimerStatus,
+  type PendingSaveDeletionDisplaySave
+} from './models'
 import { GameDatabaseStorageDetail, LocalDatabaseStorageReport } from './models/databaseInspector'
 import {
   PluginConfiguration,
@@ -32,6 +39,7 @@ type PendingSaveDeletionPayload = {
   localHash?: string
   removedSaveIds?: string[]
   source?: 'upload' | 'conflict'
+  displaySaves?: PendingSaveDeletionDisplaySave[]
   comparisonFailed?: boolean
   error?: string
   detectedAt: string

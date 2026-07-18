@@ -28,6 +28,12 @@ export type GameNavElement =
       reserveSpace: boolean
     }
 
+export interface PendingSaveDeletionDisplaySave {
+  date: string | null
+  note: string | null
+  sizeBytes: number | null
+}
+
 export interface configDocs {
   general: {
     openAtLogin: boolean
@@ -378,6 +384,8 @@ export interface configLocalDocs {
       localHash?: string
       removedSaveIds?: string[]
       source?: 'upload' | 'conflict'
+      /** Trusted remote snapshot for renderer display only; never authorizes deletion. */
+      displaySaves?: PendingSaveDeletionDisplaySave[]
       comparisonFailed?: boolean
       error?: string
       detectedAt: string
@@ -692,6 +700,8 @@ export const DEFAULT_CONFIG_LOCAL_VALUES: Readonly<configLocalDocs> = {
       localHash?: string
       removedSaveIds?: string[]
       source?: 'upload' | 'conflict'
+      /** Trusted remote snapshot for renderer display only; never authorizes deletion. */
+      displaySaves?: PendingSaveDeletionDisplaySave[]
       comparisonFailed?: boolean
       error?: string
       detectedAt: string
