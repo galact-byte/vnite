@@ -65,6 +65,9 @@ export function Save({ gameId }: { gameId: string }): React.JSX.Element {
         case 'no-remote':
           toast.warning(t('detail.save.forceRestore.notifications.noRemote'))
           break
+        case 'remote-empty':
+          toast.warning(t('detail.save.forceRestore.notifications.remoteEmpty'))
+          break
         case 'blob-missing':
           toast.error(t('detail.save.forceRestore.notifications.blobMissing'))
           break

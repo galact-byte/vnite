@@ -203,6 +203,7 @@
         "notifications": {
           "restored": "Saves for this game were force-restored from the cloud",
           "noRemote": "The cloud has no save records for this game",
+          "remoteEmpty": "The cloud copy of this game has no saves to restore; local data untouched",
           "blobMissing": "A cloud save file is missing; restore aborted, local data untouched",
           "failed": "Force restore failed: {{message}}"
         }
