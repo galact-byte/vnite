@@ -450,7 +450,10 @@ export function CloudSync(): React.JSX.Element {
       {
         loading: t('cloudSync.webdav.syncing'),
         success: t('cloudSync.webdav.syncSuccess'),
-        error: t('cloudSync.webdav.syncFailed')
+        error: (err: unknown) =>
+          err instanceof Error && err.message.includes('Sync already in progress')
+            ? t('cloudSync.webdav.syncBusy')
+            : t('cloudSync.webdav.syncFailed')
       }
     )
   }

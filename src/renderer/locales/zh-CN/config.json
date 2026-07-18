@@ -415,6 +415,7 @@
       "syncing": "正在同步...",
       "syncSuccess": "同步成功",
       "syncFailed": "同步失败",
+      "syncBusy": "已有同步正在进行(可能是退游自动上传或定时同步),请稍后再试",
       "conflictsDetected": "检测到 {{count}} 个同步冲突，请进入冲突管理处理",
       "conflictsWarning": "存在 {{count}} 个同步冲突。请在冲突管理中手动解决后再次同步。",
       "progress": {
