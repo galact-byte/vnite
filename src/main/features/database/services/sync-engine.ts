@@ -57,6 +57,8 @@ export interface SyncResult {
   attachmentsDownloaded: number
   /** Orphan attachment blobs deleted from the remote by the post-sync GC */
   attachmentsPurged: number
+  /** Doc deletions propagated to the remote (tombstones written) this pass */
+  deletionsPropagated: number
   pendingSaveDeletions: PendingSaveDeletion[]
 }
 
@@ -580,6 +582,13 @@ async function gcOrphanBlobs(
  * mutex and remote lock are still held, so no concurrent upload can add a
  * blob between reference collection and deletion. Best-effort by contract:
  * any failure is logged, returns 0, and never fails the sync.
+ *
+ * Trigger is conditional (see blobRefsMayHaveChanged): downloads never orphan
+ * remote blobs, so a pass that uploaded nothing and propagated no deletions
+ * skips GC entirely — this avoids re-reading every live doc + listing
+ * attachments/ on each no-op sync (request amplification that trips
+ * rate-limited providers like Jianguoyun). A blob orphaned by a pass whose
+ * doc upload failed is collected on the next pass that uploads.
  */
 async function gcOrphanAttachments(
   adapter: RemoteStorageAdapter,
@@ -599,6 +608,20 @@ async function gcOrphanAttachments(
     log.warn(`[Sync] Blob GC failed (${err?.message}) — will retry next sync`)
     return 0
   }
+}
+
+/**
+ * Remote blob references can only change when this device uploaded a doc
+ * (attachment set may have shrunk/changed), uploaded blobs whose doc write
+ * then failed, or propagated a doc deletion. Pure downloads never orphan
+ * remote blobs, so GC is skipped for those passes.
+ */
+function blobRefsMayHaveChanged(uploadResult: SyncResult): boolean {
+  return (
+    uploadResult.uploaded > 0 ||
+    uploadResult.attachmentsUploaded > 0 ||
+    uploadResult.deletionsPropagated > 0
+  )
 }
 
 // ─── Download (three-way merge, tombstone-aware) ─────────────────────
@@ -625,6 +648,7 @@ async function downloadSnapshotInternal(
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0,
     attachmentsPurged: 0,
+    deletionsPropagated: 0,
     pendingSaveDeletions: []
   }
 
@@ -829,6 +853,7 @@ async function uploadSnapshotInternal(
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0,
     attachmentsPurged: 0,
+    deletionsPropagated: 0,
     pendingSaveDeletions: []
   }
 
@@ -907,6 +932,7 @@ async function uploadSnapshotInternal(
           newRemoteDB[docId] = { ...tombstone }
           newBaselineDB[docId] = { ...tombstone }
           remoteManifestDirty = true
+          result.deletionsPropagated++
         } catch (err: any) {
           result.errors.push(`${dbName}/${docId}: failed to delete on remote (${err?.message})`)
         }
@@ -1094,7 +1120,9 @@ export async function uploadSnapshot(
     await acquireLock(adapter, remotePath, deviceId)
     try {
       const result = await uploadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
-      result.attachmentsPurged = await gcOrphanAttachments(adapter, remotePath)
+      result.attachmentsPurged = blobRefsMayHaveChanged(result)
+        ? await gcOrphanAttachments(adapter, remotePath)
+        : 0
       return result
     } finally {
       await releaseLock(adapter, remotePath, deviceId)
@@ -1149,6 +1177,7 @@ function emptySyncResult(): SyncResult {
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0,
     attachmentsPurged: 0,
+    deletionsPropagated: 0,
     pendingSaveDeletions: []
   }
 }
@@ -1503,6 +1532,7 @@ export async function syncBidirectional(
         attachmentsUploaded: ulResult.attachmentsUploaded,
         attachmentsDownloaded: dlResult.attachmentsDownloaded,
         attachmentsPurged: 0,
+        deletionsPropagated: ulResult.deletionsPropagated,
         pendingSaveDeletions: [...ulResult.pendingSaveDeletions]
       }
       for (const c of ulResult.conflicts) {
@@ -1510,7 +1540,9 @@ export async function syncBidirectional(
           result.conflicts.push(c)
         }
       }
-      result.attachmentsPurged = await gcOrphanAttachments(adapter, remotePath)
+      result.attachmentsPurged = blobRefsMayHaveChanged(ulResult)
+        ? await gcOrphanAttachments(adapter, remotePath)
+        : 0
       return result
     } finally {
       await releaseLock(adapter, remotePath, deviceId)
