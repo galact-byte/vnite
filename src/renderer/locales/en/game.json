@@ -573,7 +573,16 @@
           "convertBtn": "Convert to Cloud",
           "restoreBtn": "Restore to Local",
           "convertConfirmTitle": "Confirm Conversion to Sync Space?",
-          "convertConfirmDesc": "Please ensure your sync space path is actively monitored by a cloud drive client (like OneDrive, Baidu Netdisk, etc.). Converting will move the save files to that directory and create a symbolic link."
+          "convertConfirmDesc": "Please ensure your sync space path is actively monitored by a cloud drive client (like OneDrive, Baidu Netdisk, etc.). Converting will move the save files to that directory and create a symbolic link.",
+          "conflictTitle": "Sync Space Already Has This Game's Save",
+          "conflictDesc": "The cloud sync space already contains a save for this game. Compare both sides and choose which one to keep. This operation creates no backup; vnite's existing save history is your only safety net.",
+          "localSide": "Local Save",
+          "cloudSide": "Cloud Save",
+          "metaSize": "Size",
+          "metaModified": "Modified",
+          "metaFiles": "Files",
+          "useLocalBtn": "Overwrite Cloud with Local",
+          "useCloudBtn": "Replace Local with Cloud"
         },
         "notifications": {
           "configuring": "Configuring preset…",

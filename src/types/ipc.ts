@@ -6,6 +6,7 @@ import {
   EventType
 } from '@appTypes/event'
 import { PosterRenderArgs, RenderResponse, TemplatePayloads } from '@appTypes/poster'
+import type { SaveSyncProbeResult, SaveSyncResolution } from '@appTypes/sync'
 import { BatchUpdateGameMetadataProgress, OverallScanProgress } from '@appTypes/utils'
 import { ProgressInfo, UpdateCheckResult } from 'electron-updater'
 import type { GameMediaType } from './models'
@@ -200,7 +201,12 @@ type MainIpcEvents =
       'game:backup-save': (gameId: string) => string
       'game:restore-save': (gameId: string, saveId: string, skipIfTargetNewer?: boolean) => void
       'game:delete-save': (gameId: string, saveId: string) => void
-      'game:convert-save-to-sync-space': (gameId: string, savePath: string) => void
+      'game:probe-save-sync-conversion': (gameId: string, savePath: string) => SaveSyncProbeResult
+      'game:convert-save-to-sync-space': (
+        gameId: string,
+        savePath: string,
+        resolution?: SaveSyncResolution
+      ) => void
       'game:restore-save-from-sync-space': (gameId: string, savePath: string) => void
       'game:check-save-in-sync-space': (gameId: string, savePath: string) => boolean
 

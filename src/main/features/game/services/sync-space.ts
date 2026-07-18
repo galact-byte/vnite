@@ -1,13 +1,22 @@
 import log from 'electron-log/main'
 import fse from 'fs-extra'
 import path from 'path'
+import os from 'os'
 import { ConfigDBManager, GameDBManager } from '~/core/database'
+import { walkFs } from '~/utils'
 import fs from 'fs'
+import type { SaveSyncSideMeta, SaveSyncProbeResult, SaveSyncResolution } from '@appTypes/sync'
 
 /** Folder inside the sync space that holds all game save entries (new structure). */
 const SYNC_SAVES_DIR = 'Vnitesaves'
 /** Marker file written into each game directory to record which game owns it. */
 const GAME_ID_MARKER_FILE = '.vnite-game-id'
+/** 计算目录元数据时的文件数上限:超过后停扫,避免超大存档目录卡 UI。 */
+const META_FILE_CAP = 5000
+/** 计算目录元数据时的递归深度上限。 */
+const META_MAX_DEPTH = 50
+/** 命中云端条目却未携带用户决策时抛出的错误码。 */
+export const SAVE_SYNC_NEEDS_RESOLUTION = 'SAVE_SYNC_NEEDS_RESOLUTION'
 
 async function getSyncSpacePath(): Promise<string> {
   const syncSpacePath = await ConfigDBManager.getConfigLocalValue('sync.syncSpacePath')
@@ -37,13 +46,38 @@ async function createLink(target: string, linkPath: string, isDirectory: boolean
   }
 }
 
-function backupTimestamp(): string {
-  const d = new Date()
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  )
+/**
+ * 采集一个存档路径(目录或单文件)的客观元数据,供 R1 冲突弹窗"摆事实"。
+ *
+ * 目录基于现有 walkFs 递归累加大小/文件数/取最新 mtime;一旦文件数触到
+ * META_FILE_CAP,后续条目直接跳过并标记 truncated,避免超大目录阻塞 UI。
+ */
+export async function collectPathMeta(targetPath: string): Promise<SaveSyncSideMeta> {
+  const stat = await fse.stat(targetPath)
+  if (!stat.isDirectory()) {
+    return { sizeBytes: stat.size, mtimeMs: stat.mtimeMs, fileCount: 1 }
+  }
+
+  let sizeBytes = 0
+  let fileCount = 0
+  let mtimeMs = stat.mtimeMs
+  let truncated = false
+
+  await walkFs(targetPath, {
+    maxDepth: META_MAX_DEPTH,
+    // 触顶后让后续条目全部被过滤掉,迫使扫描尽快收束
+    filter: () => !truncated,
+    onFile: async (fullPath) => {
+      const fileStat = await fse.stat(fullPath).catch(() => null)
+      if (!fileStat) return
+      sizeBytes += fileStat.size
+      fileCount += 1
+      if (fileStat.mtimeMs > mtimeMs) mtimeMs = fileStat.mtimeMs
+      if (fileCount >= META_FILE_CAP) truncated = true
+    }
+  })
+
+  return { sizeBytes, mtimeMs, fileCount, truncated }
 }
 
 /**
@@ -205,15 +239,148 @@ function symlinkPermissionError(symlinkError: any): Error {
 }
 
 /**
+ * Probe whether a save path can be converted to the sync space, without
+ * mutating anything. Drives the renderer's two-step flow (probe → optional
+ * conflict dialog → commit): when the cloud already holds an entry for this
+ * game, both sides' objective metadata is returned so the user can pick.
+ */
+export async function probeSaveSyncConversion(
+  gameId: string,
+  savePath: string
+): Promise<SaveSyncProbeResult> {
+  if (await checkSaveInSyncSpace(gameId, savePath)) {
+    return { status: 'already-in-sync' }
+  }
+
+  const syncSpacePath = await getSyncSpacePath()
+  const basename = path.basename(savePath)
+  const existing = await findExistingSyncTarget(syncSpacePath, gameId, basename)
+  if (!existing) {
+    return { status: 'fresh' }
+  }
+
+  const [local, cloud] = await Promise.all([
+    collectPathMeta(savePath),
+    collectPathMeta(existing.targetPath)
+  ])
+  return { status: 'conflict', local, cloud }
+}
+
+/**
+ * use-cloud: 丢弃本地存档、链向云端条目。
+ *
+ * 先把本地存档移到系统临时目录暂存(而非 .backup),link 成功后再删;
+ * link 失败则把本地存档从临时目录复原,保证失败可回滚且不产生任何 .backup。
+ */
+async function adoptCloudSave(
+  savePath: string,
+  existing: { targetPath: string; isDirectory: boolean }
+): Promise<void> {
+  const tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'vnite-save-'))
+  const stashPath = path.join(tmpDir, path.basename(savePath))
+
+  log.info(`[SyncSpace] Adopting cloud save ${existing.targetPath}; stashing local at ${stashPath}`)
+  await fse.move(savePath, stashPath, { overwrite: false })
+
+  try {
+    await createLink(existing.targetPath, savePath, existing.isDirectory)
+  } catch (symlinkError: any) {
+    // 回滚:把本地存档从临时目录移回原处;复原失败时保留暂存目录,绝不删掉唯一副本
+    log.error('[SyncSpace] Link creation failed, restoring local save:', symlinkError)
+    try {
+      await fse.move(stashPath, savePath, { overwrite: true })
+      await fse.remove(tmpDir).catch(() => {})
+    } catch (restoreError) {
+      log.error(`[SyncSpace] Rollback failed; local save preserved at ${stashPath}:`, restoreError)
+    }
+    throw symlinkPermissionError(symlinkError)
+  }
+
+  // link 成功,用户已选用云端,丢弃本地旧存档(保险由 vnite 既有存档历史兜底)
+  await fse.remove(tmpDir).catch(() => {})
+  log.info(`[SyncSpace] Adopted cloud save for link at ${savePath}`)
+}
+
+/**
+ * use-local: 用本地存档覆盖云端条目,再建链。
+ *
+ * 先把云端条目移到临时目录暂存,任一步失败都能把云端+本地复原到操作前状态
+ * (本地在、云端在、无半链接),避免半状态丢数据。
+ */
+async function adoptLocalSave(
+  savePath: string,
+  existing: { targetPath: string; isDirectory: boolean }
+): Promise<void> {
+  const localStat = await fse.stat(savePath)
+  const isDirectory = localStat.isDirectory()
+  const targetPath = existing.targetPath
+
+  const tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'vnite-save-'))
+  const cloudStash = path.join(tmpDir, path.basename(targetPath))
+
+  log.info(`[SyncSpace] Adopting local save; stashing cloud ${targetPath} at ${cloudStash}`)
+  await fse.move(targetPath, cloudStash, { overwrite: false })
+
+  try {
+    await fse.move(savePath, targetPath, { overwrite: false })
+  } catch (moveError) {
+    // 回滚:云端复原,本地保持不动;复原失败时保留暂存目录
+    log.error('[SyncSpace] Move to sync space failed, restoring cloud:', moveError)
+    try {
+      await fse.move(cloudStash, targetPath, { overwrite: true })
+      await fse.remove(tmpDir).catch(() => {})
+    } catch (restoreError) {
+      log.error(
+        `[SyncSpace] Rollback failed; cloud entry preserved at ${cloudStash}:`,
+        restoreError
+      )
+    }
+    throw moveError
+  }
+
+  try {
+    await createLink(targetPath, savePath, isDirectory)
+  } catch (symlinkError: any) {
+    // 回滚:先把本地移回原处,成功后才复原云端——若本地移回失败,
+    // 本地内容仍在 targetPath,绝不能用云端暂存覆盖它
+    log.error('[SyncSpace] Link creation failed, restoring local and cloud:', symlinkError)
+    try {
+      await fse.move(targetPath, savePath, { overwrite: true })
+      await fse.move(cloudStash, targetPath, { overwrite: true })
+      await fse.remove(tmpDir).catch(() => {})
+    } catch (restoreError) {
+      log.error(
+        `[SyncSpace] Rollback incomplete; cloud entry preserved at ${cloudStash}:`,
+        restoreError
+      )
+    }
+    throw symlinkPermissionError(symlinkError)
+  }
+
+  // 成功:本地已覆盖云端并建链,丢弃暂存的旧云端内容
+  await fse.remove(tmpDir).catch(() => {})
+  log.info(`[SyncSpace] Adopted local save into ${targetPath}`)
+}
+
+/**
  * Convert a save path to cloud sync by moving it into the sync space
  * and creating a link at the original location.
  *
- * If the sync space already contains an entry for this game/basename
- * (e.g. synced from another device via a cloud client), the cloud version
- * is adopted: the local save is renamed to a `.backup-<timestamp>` copy and
- * the link points at the existing sync space entry.
+ * When the sync space already contains an entry for this game/basename
+ * (e.g. synced from another device via a cloud client), the caller MUST first
+ * call `probeSaveSyncConversion` and pass the user's `resolution`:
+ * - `use-cloud`: discard the local save, link to the cloud target.
+ * - `use-local`: overwrite the cloud target with the local save, then link.
+ *
+ * Neither branch produces any `.backup` artifact; both roll back to the
+ * pre-operation state on failure. Hitting an existing entry without a
+ * `resolution` throws `SAVE_SYNC_NEEDS_RESOLUTION` (defensive guard).
  */
-export async function convertSaveToSyncSpace(gameId: string, savePath: string): Promise<void> {
+export async function convertSaveToSyncSpace(
+  gameId: string,
+  savePath: string,
+  resolution?: SaveSyncResolution
+): Promise<void> {
   try {
     if (await checkSaveInSyncSpace(gameId, savePath)) {
       log.info(`[SyncSpace] ${savePath} is already in sync space.`)
@@ -228,28 +395,18 @@ export async function convertSaveToSyncSpace(gameId: string, savePath: string): 
     const existing = await findExistingSyncTarget(syncSpacePath, gameId, basename)
 
     if (existing) {
-      // Cross-device reuse: adopt the cloud version. Keep the local save as a
-      // backup next to the original location, then link to the cloud target.
-      // The link type follows the cloud target's type, not the local save's.
-      const backupPath = `${savePath}.backup-${backupTimestamp()}`
-      log.info(
-        `[SyncSpace] Sync space already has ${existing.targetPath}; adopting cloud version. ` +
-          `Backing up local save to ${backupPath}`
-      )
-      await fse.move(savePath, backupPath, { overwrite: false })
-
-      try {
-        await createLink(existing.targetPath, savePath, existing.isDirectory)
-      } catch (symlinkError: any) {
-        // Roll back: restore the local save from the backup
-        log.error('[SyncSpace] Link creation failed, restoring local save:', symlinkError)
-        await fse.move(backupPath, savePath, { overwrite: true }).catch(() => {})
-        throw symlinkPermissionError(symlinkError)
+      if (!resolution) {
+        // 命中云端却没带用户决策 → 防御性报错,渲染端应先 probe 再 commit
+        throw Object.assign(
+          new Error(`Sync space already has an entry for ${gameId}; user resolution required.`),
+          { code: SAVE_SYNC_NEEDS_RESOLUTION }
+        )
       }
-
-      log.info(
-        `[SyncSpace] Adopted cloud save for ${gameId}; local version backed up at ${backupPath}`
-      )
+      if (resolution === 'use-cloud') {
+        await adoptCloudSave(savePath, existing)
+      } else {
+        await adoptLocalSave(savePath, existing)
+      }
       return
     }
 

@@ -25,6 +25,7 @@ import {
 } from '@ui/select'
 import { Separator } from '@ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@ui/tooltip'
+import type { SaveSyncSideMeta } from '@appTypes/sync'
 import React, { useCallback, useEffect, useImperativeHandle, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -50,6 +51,11 @@ function SavePathSyncStatus({
   const [isCloud, setIsCloud] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
+  // 云端已有条目时的二选一弹窗数据;为 null 时弹窗关闭
+  const [conflict, setConflict] = useState<{
+    local: SaveSyncSideMeta
+    cloud: SaveSyncSideMeta
+  } | null>(null)
 
   const checkStatus = useCallback(() => {
     ipcManager
@@ -62,10 +68,10 @@ function SavePathSyncStatus({
     checkStatus()
   }, [checkStatus])
 
-  const confirmConvert = (): void => {
-    setShowConfirm(false)
+  // 实际提交转换:resolution 为 undefined 走 fresh 分支,否则携带用户在冲突弹窗里的选择
+  const commitConvert = (resolution?: 'use-cloud' | 'use-local'): void => {
     setLoading(true)
-    const p = ipcManager.invoke('game:convert-save-to-sync-space', gameId, savePath)
+    const p = ipcManager.invoke('game:convert-save-to-sync-space', gameId, savePath, resolution)
     toast.promise(p, {
       loading: t('detail.properties.path.syncSpace.converting'),
       success: () => {
@@ -80,8 +86,29 @@ function SavePathSyncStatus({
     p.finally(() => setLoading(false))
   }
 
+  const confirmConvert = (): void => {
+    setShowConfirm(false)
+    commitConvert()
+  }
+
+  // 先 probe:fresh/already-in-sync 直接走,conflict 时弹二选一窗让用户拍事实后决定
   const handleConvert = (): void => {
-    setShowConfirm(true)
+    setLoading(true)
+    ipcManager
+      .invoke('game:probe-save-sync-conversion', gameId, savePath)
+      .then((probe) => {
+        if (probe.status === 'conflict') {
+          setConflict({ local: probe.local, cloud: probe.cloud })
+        } else if (probe.status === 'already-in-sync') {
+          checkStatus()
+        } else {
+          setShowConfirm(true)
+        }
+      })
+      .catch((err) => {
+        toast.error(`${t('detail.properties.path.syncSpace.convertError')}: ${err.message}`)
+      })
+      .finally(() => setLoading(false))
   }
 
   const handleRestore = (): void => {
@@ -155,7 +182,93 @@ function SavePathSyncStatus({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* 云端已有条目:只摆大小/修改时间/文件数,不给推荐,用户二选一 */}
+      <Dialog open={conflict !== null} onOpenChange={(open) => !open && setConflict(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('detail.properties.path.syncSpace.conflictTitle')}</DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-muted-foreground">
+            {t('detail.properties.path.syncSpace.conflictDesc')}
+          </div>
+          {conflict && (
+            <div className="grid grid-cols-2 gap-3 py-2">
+              <SyncSideMetaCard
+                label={t('detail.properties.path.syncSpace.localSide')}
+                meta={conflict.local}
+              />
+              <SyncSideMetaCard
+                label={t('detail.properties.path.syncSpace.cloudSide')}
+                meta={conflict.cloud}
+              />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConflict(null)}>
+              {t('utils:common.cancel')}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConflict(null)
+                commitConvert('use-local')
+              }}
+            >
+              {t('detail.properties.path.syncSpace.useLocalBtn')}
+            </Button>
+            <Button
+              onClick={() => {
+                setConflict(null)
+                commitConvert('use-cloud')
+              }}
+            >
+              {t('detail.properties.path.syncSpace.useCloudBtn')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
+  )
+}
+
+/** 格式化字节数为可读单位。 */
+function formatMetaSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(2)} KiB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${mb.toFixed(2)} MiB`
+  return `${(mb / 1024).toFixed(2)} GiB`
+}
+
+/** 冲突弹窗里展示单侧客观元数据的小卡片。 */
+function SyncSideMetaCard({
+  label,
+  meta
+}: {
+  label: string
+  meta: SaveSyncSideMeta
+}): React.JSX.Element {
+  const { t } = useTranslation('game')
+  // truncated 时 size/文件数为下限,加 ≥ 前缀提示
+  const prefix = meta.truncated ? '≥' : ''
+  return (
+    <div className="flex flex-col gap-1 p-3 border rounded-md bg-muted/20">
+      <div className="font-medium">{label}</div>
+      <div className="text-xs text-muted-foreground">
+        {t('detail.properties.path.syncSpace.metaSize')}: {prefix}
+        {formatMetaSize(meta.sizeBytes)}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {t('detail.properties.path.syncSpace.metaModified')}:{' '}
+        {new Date(meta.mtimeMs).toLocaleString()}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {t('detail.properties.path.syncSpace.metaFiles')}: {prefix}
+        {meta.fileCount}
+      </div>
+    </div>
   )
 }
 
