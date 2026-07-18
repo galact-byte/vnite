@@ -20,9 +20,11 @@ import {
   upscaleGameBackground,
   checkSaveInSyncSpace,
   convertSaveToSyncSpace,
+  probeSaveSyncConversion,
   restoreSaveFromSyncSpace,
   searchGameSavePaths
 } from './services'
+import type { SaveSyncResolution } from '@appTypes/sync'
 
 export function setupGameIPC(): void {
   ipcManager.handle(
@@ -51,17 +53,33 @@ export function setupGameIPC(): void {
     }
   )
 
-  ipcManager.handle('game:convert-save-to-sync-space', async (_, gameId: string, savePath: string) => {
-    await convertSaveToSyncSpace(gameId, savePath)
-  })
+  ipcManager.handle(
+    'game:probe-save-sync-conversion',
+    async (_, gameId: string, savePath: string) => {
+      return await probeSaveSyncConversion(gameId, savePath)
+    }
+  )
 
-  ipcManager.handle('game:restore-save-from-sync-space', async (_, gameId: string, savePath: string) => {
-    await restoreSaveFromSyncSpace(gameId, savePath)
-  })
+  ipcManager.handle(
+    'game:convert-save-to-sync-space',
+    async (_, gameId: string, savePath: string, resolution?: SaveSyncResolution) => {
+      await convertSaveToSyncSpace(gameId, savePath, resolution)
+    }
+  )
 
-  ipcManager.handle('game:check-save-in-sync-space', async (_, gameId: string, savePath: string) => {
-    return await checkSaveInSyncSpace(gameId, savePath)
-  })
+  ipcManager.handle(
+    'game:restore-save-from-sync-space',
+    async (_, gameId: string, savePath: string) => {
+      await restoreSaveFromSyncSpace(gameId, savePath)
+    }
+  )
+
+  ipcManager.handle(
+    'game:check-save-in-sync-space',
+    async (_, gameId: string, savePath: string) => {
+      return await checkSaveInSyncSpace(gameId, savePath)
+    }
+  )
 
   ipcManager.handle('game:delete', async (_, gameId: string) => {
     await GameDBManager.removeGame(gameId)

@@ -573,7 +573,16 @@
           "convertBtn": "转换至云端",
           "restoreBtn": "转回本地",
           "convertConfirmTitle": "确认转换至同步空间？",
-          "convertConfirmDesc": "请确保您的同步空间路径正被网盘客户端（如 OneDrive、百度网盘等）持续同步中。转换后将把存档实际移动到该目录并创建软链接。"
+          "convertConfirmDesc": "请确保您的同步空间路径正被网盘客户端（如 OneDrive、百度网盘等）持续同步中。转换后将把存档实际移动到该目录并创建软链接。",
+          "conflictTitle": "同步空间已存在该游戏的存档",
+          "conflictDesc": "云端同步空间里已有一份该存档。请对比两侧信息，选择保留哪一份。此操作不会产生任何备份，仅由 vnite 既有存档历史兜底。",
+          "localSide": "本地存档",
+          "cloudSide": "云端存档",
+          "metaSize": "大小",
+          "metaModified": "修改时间",
+          "metaFiles": "文件数",
+          "useLocalBtn": "用本地覆盖云端",
+          "useCloudBtn": "用云端替换本地"
         },
         "notifications": {
           "configuring": "正在配置预设…",
