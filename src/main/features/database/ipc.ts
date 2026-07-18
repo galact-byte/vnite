@@ -16,6 +16,8 @@ import {
   getRemoteSnapshotInfo,
   getWebdavConflictDetail,
   resolveWebdavConflict,
+  confirmWebdavSaveDeletion,
+  dismissWebdavSaveDeletion,
   encryptPasswordForStorage
 } from './services'
 import { baseDBManager, ConfigDBManager } from '~/core/database'
@@ -158,6 +160,15 @@ export function setupDatabaseIPC(): void {
       return await resolveWebdavConflict(config, dbName, docId, choice)
     }
   )
+
+  ipcManager.handle('db:webdav-confirm-save-deletion', async (_, gameId: string) => {
+    const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')
+    return await confirmWebdavSaveDeletion(config, gameId)
+  })
+
+  ipcManager.handle('db:webdav-dismiss-save-deletion', async (_, gameId: string) => {
+    return await dismissWebdavSaveDeletion(gameId)
+  })
 
   ipcManager.handle('db:get-webdav-remote-info', async () => {
     const config = await ConfigDBManager.getConfigLocalValue('sync.webdavConfig')

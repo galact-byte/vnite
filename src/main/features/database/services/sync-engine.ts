@@ -32,6 +32,22 @@ export interface ConflictInfo {
   dbName: string
 }
 
+/**
+ * A game doc whose upload was held back because it would propagate an
+ * abnormal save deletion (≥2 saves removed, or the entire save history
+ * cleared) to the remote. The doc stays local-only until the user approves
+ * the deletion (approveSaveDeletion + re-sync) or restores the saves.
+ */
+export interface PendingSaveDeletion {
+  gameId: string
+  /** Number of saves that would be deleted on the remote */
+  removedCount: number
+  /** Save count currently on the remote (before the deletion) */
+  remoteSaveCount: number
+  /** True when the local doc has no saves left at all */
+  clearsHistory: boolean
+}
+
 export interface SyncResult {
   uploaded: number
   downloaded: number
@@ -39,6 +55,7 @@ export interface SyncResult {
   errors: string[]
   attachmentsUploaded: number
   attachmentsDownloaded: number
+  pendingSaveDeletions: PendingSaveDeletion[]
 }
 
 export interface SyncProgress {
@@ -58,6 +75,12 @@ const MANIFEST_FILE = 'manifest.json'
 const LOCK_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
 const BASELINE_DOC_ID = 'webdav-sync-baseline'
+const SAVE_DELETION_APPROVALS_DOC_ID = 'webdav-save-deletion-approvals'
+
+// Save-deletion guard thresholds: removing more saves than this in one sync
+// round (or clearing a game's entire history) is considered abnormal and
+// requires explicit user approval before the deletion reaches the remote.
+const MAX_SILENT_SAVE_REMOVALS = 1
 
 // Tombstones older than this are garbage-collected from manifest + baseline
 const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
@@ -166,6 +189,37 @@ async function loadBaselineManifest(): Promise<Manifest | null> {
 
 async function saveBaselineManifest(manifest: Manifest): Promise<void> {
   await baseDBManager.setValue('config-local', BASELINE_DOC_ID, '#all', { manifest })
+}
+
+// ─── Save-deletion Approvals ────────────────────────────────────────
+
+async function loadSaveDeletionApprovals(): Promise<Set<string>> {
+  const gameIds = await baseDBManager.getValue<string[]>(
+    'config-local',
+    SAVE_DELETION_APPROVALS_DOC_ID,
+    'gameIds',
+    []
+  )
+  return new Set(gameIds)
+}
+
+async function storeSaveDeletionApprovals(gameIds: Set<string>): Promise<void> {
+  await baseDBManager.setValue('config-local', SAVE_DELETION_APPROVALS_DOC_ID, '#all', {
+    gameIds: [...gameIds],
+    updatedAt: new Date().toISOString()
+  })
+}
+
+/**
+ * Record user approval for propagating an abnormal save deletion of one game
+ * to the remote. Consumed (one-shot) by the next upload phase: approvals are
+ * cleared after every upload run, so a later abnormal deletion of the same
+ * game prompts again.
+ */
+export async function approveSaveDeletion(gameId: string): Promise<void> {
+  const approvals = await loadSaveDeletionApprovals()
+  approvals.add(gameId)
+  await storeSaveDeletionApprovals(approvals)
 }
 
 // ─── Ensure Directory ────────────────────────────────────────────────
@@ -443,7 +497,8 @@ async function downloadSnapshotInternal(
     conflicts: [],
     errors: [],
     attachmentsUploaded: 0,
-    attachmentsDownloaded: 0
+    attachmentsDownloaded: 0,
+    pendingSaveDeletions: []
   }
 
   const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
@@ -617,6 +672,13 @@ async function downloadSnapshotInternal(
   return result
 }
 
+/** Save IDs of a game doc (keys of save.saveList), or empty set. */
+function gameSaveIds(doc: any): Set<string> {
+  const saveList = doc?.save?.saveList
+  if (!saveList || typeof saveList !== 'object') return new Set()
+  return new Set(Object.keys(saveList))
+}
+
 // ─── Upload (three-way merge, tombstone-aware) ───────────────────────
 
 /**
@@ -638,11 +700,13 @@ async function uploadSnapshotInternal(
     conflicts: [],
     errors: [],
     attachmentsUploaded: 0,
-    attachmentsDownloaded: 0
+    attachmentsDownloaded: 0,
+    pendingSaveDeletions: []
   }
 
   const localManifest = await buildLocalManifest(deviceId)
   const baseline = await loadBaselineManifest()
+  const saveDeletionApprovals = await loadSaveDeletionApprovals()
 
   const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
   let remoteManifest: Manifest | null = null
@@ -784,6 +848,55 @@ async function uploadSnapshotInternal(
       // (edit wins over a remote tombstone) → upload
       try {
         const fullDoc = await db.get(docId, { attachments: true, binary: true })
+
+        // ── Save-deletion guard (game docs only) ──
+        // Overwriting a live remote game doc destroys any saves the remote
+        // has that the local doc no longer lists. A single removal is normal
+        // churn (maxBackups eviction / manual delete of one save) and passes
+        // silently; removing ≥2 saves or clearing the game's entire history
+        // is abnormal (typically local data loss) and is held back until the
+        // user explicitly approves it. While held, neither the remote doc nor
+        // baseline/manifest advance, so the doc is re-evaluated every sync.
+        if (dbName === 'game' && isLiveEntry(remoteEntry)) {
+          try {
+            const docPath = remoteDocPath(remotePath, dbName, docId)
+            if (await adapter.exists(docPath)) {
+              const remoteDocContent = await adapter.readFile(docPath, 'text')
+              const remoteSaveIds = gameSaveIds(JSON.parse(remoteDocContent as string))
+              const localSaveIds = gameSaveIds(fullDoc)
+              let removedCount = 0
+              for (const saveId of remoteSaveIds) {
+                if (!localSaveIds.has(saveId)) removedCount++
+              }
+              const clearsHistory = localSaveIds.size === 0 && remoteSaveIds.size > 0
+              if (removedCount > MAX_SILENT_SAVE_REMOVALS || clearsHistory) {
+                if (saveDeletionApprovals.has(docId)) {
+                  log.info(
+                    `[Sync] Approved save deletion for ${docId} (${removedCount} saves) — propagating`
+                  )
+                } else {
+                  result.pendingSaveDeletions.push({
+                    gameId: docId,
+                    removedCount,
+                    remoteSaveCount: remoteSaveIds.size,
+                    clearsHistory
+                  })
+                  log.warn(
+                    `[Sync] Held back upload of ${docId}: would delete ${removedCount} of ` +
+                      `${remoteSaveIds.size} remote saves (awaiting user confirmation)`
+                  )
+                  continue
+                }
+              }
+            }
+          } catch (guardErr: any) {
+            // Fail open: an unreadable remote doc must not block the upload
+            // forever — worst case a deletion propagates unprompted, same as
+            // before this guard existed.
+            log.warn(`[Sync] Save-deletion guard failed for ${docId}:`, guardErr?.message)
+          }
+        }
+
         const docClone = await extractAndUploadAttachments(adapter, remotePath, fullDoc, result)
 
         const docDir = path.posix.join(remotePath, 'docs', dbName)
@@ -803,6 +916,12 @@ async function uploadSnapshotInternal(
         result.errors.push(`${dbName}/${docId}: upload failed (${err?.message})`)
       }
     }
+  }
+
+  // Approvals are one-shot: clear them after every upload run so a later
+  // abnormal deletion (same game or not) prompts the user again.
+  if (saveDeletionApprovals.size > 0) {
+    await storeSaveDeletionApprovals(new Set())
   }
 
   // GC expired tombstones from both the outgoing remote manifest and the new
@@ -898,7 +1017,8 @@ function emptySyncResult(): SyncResult {
     conflicts: [],
     errors: [],
     attachmentsUploaded: 0,
-    attachmentsDownloaded: 0
+    attachmentsDownloaded: 0,
+    pendingSaveDeletions: []
   }
 }
 
@@ -1114,7 +1234,8 @@ export async function syncBidirectional(
         conflicts: [...dlResult.conflicts],
         errors: [...dlResult.errors, ...ulResult.errors],
         attachmentsUploaded: ulResult.attachmentsUploaded,
-        attachmentsDownloaded: dlResult.attachmentsDownloaded
+        attachmentsDownloaded: dlResult.attachmentsDownloaded,
+        pendingSaveDeletions: [...ulResult.pendingSaveDeletions]
       }
       for (const c of ulResult.conflicts) {
         if (!result.conflicts.some((e) => e.docId === c.docId && e.dbName === c.dbName)) {

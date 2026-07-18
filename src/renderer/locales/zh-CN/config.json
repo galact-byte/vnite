@@ -437,6 +437,18 @@
         "detailFailed": "获取差异失败:{{message}}",
         "remoteMissing": "远端版本已不存在"
       },
+      "saveDeletions": {
+        "title": "{{count}} 个游戏的云端存档删除待确认",
+        "description": "本次同步将删除多个云端存档(可能由本地误删/丢失引起),云端存档已保留,需你确认后才会删除。",
+        "itemPartial": "将删除 {{total}} 个云端存档中的 {{removed}} 个",
+        "itemClearsAll": "将删除全部 {{total}} 个云端存档",
+        "keepCloud": "保留云端存档",
+        "confirmDelete": "删除云端存档",
+        "confirmed": "已确认删除并同步",
+        "dismissed": "已保留云端存档。该游戏在确认或本地恢复前不会同步。",
+        "actionFailed": "操作失败:{{message}}",
+        "detected": "{{count}} 个游戏因将删除云端存档被暂缓同步,请在云同步设置中确认"
+      },
       "status": {
         "title": "本机同步状态",
         "lastSync": "上次同步",
