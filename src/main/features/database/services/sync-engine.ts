@@ -55,6 +55,8 @@ export interface SyncResult {
   errors: string[]
   attachmentsUploaded: number
   attachmentsDownloaded: number
+  /** Orphan attachment blobs deleted from the remote by the post-sync GC */
+  attachmentsPurged: number
   pendingSaveDeletions: PendingSaveDeletion[]
 }
 
@@ -475,6 +477,130 @@ async function restoreAttachments(
   return true
 }
 
+// ─── Orphan Attachment GC (R3) ───────────────────────────────────────
+
+const BLOB_FILE_RE = /^([0-9a-f]{64})\.bin$/
+
+/**
+ * Collect the sha256 of every attachment blob referenced by the current
+ * remote state: all live docs in the remote manifest plus every conflict
+ * copy parked under conflicts/ (their attachments are content-addressed in
+ * the same blob store). Returns null when any live doc or conflict copy
+ * cannot be read or parsed — the caller must then skip deletion entirely,
+ * because an unreadable doc may reference any blob. This conservatism is
+ * deliberate and must stay strict: the R4 save-deletion guard fails open on
+ * unreadable remote docs, so this is the only remaining protection for
+ * their blobs.
+ */
+async function collectReferencedBlobHashes(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  remoteManifest: Manifest
+): Promise<Set<string> | null> {
+  const referenced = new Set<string>()
+
+  const addDocRefs = (doc: any): void => {
+    const attachments = doc?._attachments
+    if (!attachments || typeof attachments !== 'object') return
+    for (const att of Object.values(attachments)) {
+      const hash = (att as any)?._sha256
+      if (typeof hash === 'string' && hash.length > 0) referenced.add(hash)
+    }
+  }
+
+  for (const [dbName, docs] of Object.entries(remoteManifest.databases ?? {})) {
+    for (const [docId, entry] of Object.entries(docs ?? {})) {
+      if (!isLiveEntry(entry)) continue
+      const docPath = remoteDocPath(remotePath, dbName, docId)
+      try {
+        const content = await adapter.readFile(docPath, 'text')
+        addDocRefs(JSON.parse(content as string))
+      } catch (err: any) {
+        log.warn(
+          `[Sync] Blob GC: cannot read live doc ${dbName}/${docId} (${err?.message}) — skipping GC this round`
+        )
+        return null
+      }
+    }
+  }
+
+  const conflictDir = path.posix.join(remotePath, 'conflicts')
+  try {
+    if (await adapter.exists(conflictDir)) {
+      for (const item of await adapter.list(conflictDir)) {
+        if (item.isDirectory || !item.name.endsWith('.json')) continue
+        const content = await adapter.readFile(path.posix.join(conflictDir, item.name), 'text')
+        addDocRefs(JSON.parse(content as string))
+      }
+    }
+  } catch (err: any) {
+    log.warn(
+      `[Sync] Blob GC: cannot scan conflict copies (${err?.message}) — skipping GC this round`
+    )
+    return null
+  }
+
+  return referenced
+}
+
+/**
+ * Delete every blob under attachments/ whose hash is not in `referenced`.
+ * Unrecognized file names and directories are left alone. Individual
+ * deletion failures are logged and skipped (the blob stays orphaned and is
+ * retried on the next sync). Returns the number of blobs actually deleted.
+ */
+async function gcOrphanBlobs(
+  adapter: RemoteStorageAdapter,
+  remotePath: string,
+  referenced: Set<string>
+): Promise<number> {
+  const attDir = path.posix.join(remotePath, 'attachments')
+  if (!(await adapter.exists(attDir))) return 0
+
+  let purged = 0
+  for (const item of await adapter.list(attDir)) {
+    if (item.isDirectory) continue
+    const match = BLOB_FILE_RE.exec(item.name)
+    if (!match || referenced.has(match[1])) continue
+    try {
+      await adapter.deleteFile(path.posix.join(attDir, item.name))
+      purged++
+    } catch (err: any) {
+      log.warn(`[Sync] Blob GC: failed to delete orphan ${item.name} (${err?.message})`)
+    }
+  }
+  if (purged > 0) {
+    log.info(`[Sync] Blob GC: deleted ${purged} orphan attachment blob(s)`)
+  }
+  return purged
+}
+
+/**
+ * R3 orphan-attachment GC. Runs after a completed sync pass, while the sync
+ * mutex and remote lock are still held, so no concurrent upload can add a
+ * blob between reference collection and deletion. Best-effort by contract:
+ * any failure is logged, returns 0, and never fails the sync.
+ */
+async function gcOrphanAttachments(
+  adapter: RemoteStorageAdapter,
+  remotePath: string
+): Promise<number> {
+  try {
+    const manifestPath = path.posix.join(remotePath, MANIFEST_FILE)
+    if (!(await adapter.exists(manifestPath))) return 0
+    const manifestContent = await adapter.readFile(manifestPath, 'text')
+    const remoteManifest: Manifest = JSON.parse(manifestContent as string)
+
+    const referenced = await collectReferencedBlobHashes(adapter, remotePath, remoteManifest)
+    if (referenced === null) return 0
+
+    return await gcOrphanBlobs(adapter, remotePath, referenced)
+  } catch (err: any) {
+    log.warn(`[Sync] Blob GC failed (${err?.message}) — will retry next sync`)
+    return 0
+  }
+}
+
 // ─── Download (three-way merge, tombstone-aware) ─────────────────────
 
 /**
@@ -498,6 +624,7 @@ async function downloadSnapshotInternal(
     errors: [],
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0,
+    attachmentsPurged: 0,
     pendingSaveDeletions: []
   }
 
@@ -701,6 +828,7 @@ async function uploadSnapshotInternal(
     errors: [],
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0,
+    attachmentsPurged: 0,
     pendingSaveDeletions: []
   }
 
@@ -965,7 +1093,9 @@ export async function uploadSnapshot(
     const deviceId = await getDeviceId()
     await acquireLock(adapter, remotePath, deviceId)
     try {
-      return await uploadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+      const result = await uploadSnapshotInternal(adapter, remotePath, deviceId, onProgress)
+      result.attachmentsPurged = await gcOrphanAttachments(adapter, remotePath)
+      return result
     } finally {
       await releaseLock(adapter, remotePath, deviceId)
     }
@@ -1018,6 +1148,7 @@ function emptySyncResult(): SyncResult {
     errors: [],
     attachmentsUploaded: 0,
     attachmentsDownloaded: 0,
+    attachmentsPurged: 0,
     pendingSaveDeletions: []
   }
 }
@@ -1235,6 +1366,7 @@ export async function syncBidirectional(
         errors: [...dlResult.errors, ...ulResult.errors],
         attachmentsUploaded: ulResult.attachmentsUploaded,
         attachmentsDownloaded: dlResult.attachmentsDownloaded,
+        attachmentsPurged: 0,
         pendingSaveDeletions: [...ulResult.pendingSaveDeletions]
       }
       for (const c of ulResult.conflicts) {
@@ -1242,6 +1374,7 @@ export async function syncBidirectional(
           result.conflicts.push(c)
         }
       }
+      result.attachmentsPurged = await gcOrphanAttachments(adapter, remotePath)
       return result
     } finally {
       await releaseLock(adapter, remotePath, deviceId)
