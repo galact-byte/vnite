@@ -1,5 +1,6 @@
 import { ConfigDBManager } from '~/core/database'
 import { baseDBManager } from '~/core/database'
+import { eventBus } from '~/core/events'
 import { ipcManager } from '~/core/ipc'
 import { getCouchDBSize } from './cloud'
 import { syncViaWebDAV } from './webdav'
@@ -7,8 +8,49 @@ import { ROLE_QUOTAS } from '@appTypes/sync'
 import log from 'electron-log/main'
 
 let webdavSyncInterval: NodeJS.Timeout | null = null
+let saveCreatedListenerRegistered = false
+
+/**
+ * R5: after a game exits and its save backup is created, push it to the
+ * cloud right away so other devices pick it up on their next startup sync —
+ * no manual "sync now" needed.
+ *
+ * Registered once for the app lifetime; the callback re-reads the sync
+ * config on every firing, so toggling WebDAV sync on/off needs no restart.
+ * Steady-state backups add one save and rotate out at most one old save,
+ * which stays under the R4 silent threshold. If a backup removes more (e.g.
+ * the user just lowered maxBackups), the R4 guard holds the deletion back
+ * for confirmation as usual. Failures are logged and never surface to the
+ * user — the periodic auto-sync or quit sync will retry later.
+ */
+function registerSaveCreatedAutoUpload(): void {
+  if (saveCreatedListenerRegistered) return
+  saveCreatedListenerRegistered = true
+
+  eventBus.on('game:save-created', async ({ gameId }) => {
+    try {
+      const syncConfig = await ConfigDBManager.getConfigLocalValue('sync')
+      if (!syncConfig.enabled || syncConfig.mode !== 'webdav') {
+        return
+      }
+      if (!syncConfig.webdavConfig.url || !syncConfig.webdavConfig.auth.username) {
+        return
+      }
+      log.info(`[Sync] Uploading new save for game ${gameId} via WebDAV...`)
+      await syncViaWebDAV(syncConfig.webdavConfig, 'auto', { silent: true })
+      log.info(`[Sync] Post-save WebDAV sync finished for game ${gameId}`)
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Sync already in progress') {
+        log.info('[Sync] Post-save WebDAV sync skipped: sync already in progress')
+      } else {
+        log.warn('[Sync] Post-save WebDAV sync failed:', error)
+      }
+    }
+  })
+}
 
 export async function startSync(): Promise<void> {
+  registerSaveCreatedAutoUpload()
   try {
     const syncConfig = await ConfigDBManager.getConfigLocalValue('sync')
     const userInfo = await ConfigDBManager.getConfigLocalValue('userInfo')
