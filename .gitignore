@@ -26,6 +26,7 @@ vnite-webdav-sync-plan.md
 /.trellis/
 /AGENTS.md
 /.claude/
+/.until-done/
 
 # Temp verification scripts
 .verify-tmp/
