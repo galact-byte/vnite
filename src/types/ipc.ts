@@ -16,7 +16,8 @@ import {
   configLocalDocs,
   gameDoc,
   GameTimerStatus,
-  type PendingSaveDeletionDisplaySave
+  type PendingSaveDeletionDisplaySave,
+  type DocChangeResult
 } from './models'
 import { GameDatabaseStorageDetail, LocalDatabaseStorageReport } from './models/databaseInspector'
 import {
@@ -187,7 +188,7 @@ type MainIpcEvents =
         docId: string
         data: any
         timestamp: number
-      }) => void
+      }) => DocChangeResult
       'db:compact-remote-database': () => void
       'db:reset-appearances-settings': () => void
       'db:remove-config-background': (theme: 'dark' | 'light' | '#all') => void

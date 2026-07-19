@@ -1,4 +1,4 @@
-import { DocChange } from '@appTypes/models'
+import { DocChange, type DocChangeResult } from '@appTypes/models'
 import { create } from 'zustand'
 import { ipcManager } from '~/app/ipc'
 
@@ -8,13 +8,13 @@ import { ipcManager } from '~/app/ipc'
  * @param dbName Database name
  * @param docId Document ID
  * @param data Documentation data
- * @returns Promise<void>
+ * @returns Database normalization metadata.
  */
 export async function syncTo<T extends Record<string, any>>(
   dbName: string,
   docId: string,
   data: T | '#delete'
-): Promise<void> {
+): Promise<DocChangeResult> {
   // Creating Change Objects
   const change: DocChange = {
     dbName,
@@ -24,7 +24,7 @@ export async function syncTo<T extends Record<string, any>>(
   }
 
   try {
-    await ipcManager.invoke('db:doc-changed', change)
+    return await ipcManager.invoke('db:doc-changed', change)
   } catch (error) {
     console.error(`[Sync] sync failure ${dbName}/${docId}:`, error)
     throw error

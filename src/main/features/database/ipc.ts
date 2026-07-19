@@ -23,42 +23,56 @@ import {
 } from './services'
 import { baseDBManager, ConfigDBManager } from '~/core/database'
 import { ipcManager } from '~/core/ipc'
-import { DocChange } from '@appTypes/models'
-import { shouldReinferRootPath } from '~/utils'
+import { DocChange, type gameLocalDoc } from '@appTypes/models'
+import { relocateGameLocalPaths, shouldReinferRootPath } from '~/utils'
 
 export function setupDatabaseIPC(): void {
   ipcManager.handle('db:doc-changed', async (_event, change: DocChange) => {
+    let data = change.data
+    let relocatedFieldCount = 0
+
     // Encrypt the WebDAV password at the DB boundary: the renderer writes
     // the whole sync doc back in plaintext when the user edits it, and it
     // must never be persisted unencrypted (no-op if already encrypted).
     if (change.dbName === 'config-local' && change.docId === 'sync') {
-      const webdavAuth = change.data?.webdavConfig?.auth
+      const webdavAuth = data?.webdavConfig?.auth
       if (webdavAuth?.password) {
         webdavAuth.password = encryptPasswordForStorage(webdavAuth.password)
       }
     }
 
-    // Ensure rootPath consistency when saving game-local data.
-    // If gamePath changed and rootPath is empty or gamePath falls outside rootPath,
-    // re-infer rootPath from the directory of gamePath before saving.
-    if (change.dbName === 'game-local' && change.data?.path?.gamePath) {
+    // Normalize game-local data in one write so the game path, derived launcher
+    // fields, and inferred rootPath cannot be persisted out of sync.
+    if (change.dbName === 'game-local' && data?.path?.gamePath) {
       const oldGamePath = await baseDBManager.getValue(
         change.dbName,
         change.docId,
         'path.gamePath',
         ''
       )
+      const relocation = relocateGameLocalPaths(
+        oldGamePath,
+        data.path.gamePath,
+        data as gameLocalDoc
+      )
+      data = relocation.doc
+      relocatedFieldCount = relocation.relocatedFieldCount
+
       const newRootPath = shouldReinferRootPath(
         oldGamePath,
-        change.data.path.gamePath,
-        change.data.utils?.rootPath ?? ''
+        data.path.gamePath,
+        data.utils?.rootPath ?? ''
       )
       if (newRootPath !== null) {
-        change.data.utils = { ...change.data.utils, rootPath: newRootPath }
+        data = { ...data, utils: { ...data.utils, rootPath: newRootPath } }
       }
     }
 
-    return await baseDBManager.setValue(change.dbName, change.docId, '#all', change.data)
+    await baseDBManager.setValue(change.dbName, change.docId, '#all', data)
+    return {
+      relocatedFieldCount,
+      ...(change.dbName === 'game-local' ? { data: data as gameLocalDoc } : {})
+    }
   })
 
   ipcManager.handle('db:get-all-docs', async (_event, dbName: string) => {

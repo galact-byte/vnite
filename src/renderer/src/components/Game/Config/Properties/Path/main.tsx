@@ -306,6 +306,26 @@ function PathComponent(
   const [searchResults, setSearchResults] = useState<string[]>([])
   const [selectedSearchResults, setSelectedSearchResults] = useState<Record<string, boolean>>({})
 
+  const refreshKnownGame = useCallback(() => {
+    ipcManager.send('native-monitor:update-local-game', gameId)
+  }, [gameId])
+
+  const showPathRelocationNotice = useCallback(
+    (relocatedFieldCount?: number) => {
+      if (relocatedFieldCount) {
+        toast.success(t('detail.properties.path.notifications.pathsRelocated'))
+      }
+    },
+    [t]
+  )
+
+  const saveGamePathAndRefreshMonitor = useCallback(async () => {
+    const result = await saveGamePath()
+    refreshKnownGame()
+    showPathRelocationNotice(result?.relocatedFieldCount)
+    return result
+  }, [refreshKnownGame, saveGamePath, showPathRelocationNotice])
+
   const openSearchDialog = async (): Promise<void> => {
     const promise = ipcManager.invoke('game:search-save-paths', gameId)
 
@@ -338,8 +358,9 @@ function PathComponent(
   }
 
   const saveAll = useCallback(async () => {
-    await Promise.all([saveGamePath(), saveRootPath(), saveSavePaths(), saveScreenshotPath()])
-  }, [saveGamePath, saveRootPath, saveSavePaths, saveScreenshotPath])
+    await saveGamePathAndRefreshMonitor()
+    await Promise.all([saveRootPath(), saveSavePaths(), saveScreenshotPath()])
+  }, [saveGamePathAndRefreshMonitor, saveRootPath, saveSavePaths, saveScreenshotPath])
   useImperativeHandle(ref, () => ({ save: saveAll }), [saveAll])
 
   useEffect(() => {
@@ -410,7 +431,9 @@ function PathComponent(
     if (!filePath) {
       return
     }
-    await setGamePathAndSave(filePath)
+    const result = await setGamePathAndSave(filePath)
+    refreshKnownGame()
+    showPathRelocationNotice(result?.relocatedFieldCount)
     const isIconAccessible = await ipcManager.invoke(
       'db:check-attachment',
       'game',
@@ -421,16 +444,13 @@ function PathComponent(
       await ipcManager.invoke('utils:save-game-icon-by-file', gameId, filePath)
     }
     if (!monitorPath) {
-      toast.promise(
-        async () => {
-          await ipcManager.invoke('launcher:select-preset', 'default', gameId)
-        },
-        {
-          loading: t('detail.properties.path.notifications.configuring'),
-          success: t('detail.properties.path.notifications.success'),
-          error: (error) => `${error}`
-        }
-      )
+      const presetPromise = ipcManager.invoke('launcher:select-preset', 'default', gameId)
+      toast.promise(presetPromise, {
+        loading: t('detail.properties.path.notifications.configuring'),
+        success: t('detail.properties.path.notifications.success'),
+        error: (error) => `${error}`
+      })
+      void presetPromise.then(refreshKnownGame, refreshKnownGame)
     }
   }
 
@@ -494,7 +514,7 @@ function PathComponent(
                 className={cn('flex-1')}
                 value={gamePath}
                 onChange={(e) => setGamePath(e.target.value)}
-                onBlur={saveGamePath}
+                onBlur={saveGamePathAndRefreshMonitor}
               />
               <Button variant={'outline'} size={'icon'} onClick={selectGamePath}>
                 <span className={cn('icon-[mdi--file-outline] w-5 h-5')}></span>

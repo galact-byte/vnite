@@ -1,4 +1,4 @@
-import { DEFAULT_GAME_LOCAL_VALUES, gameLocalDoc } from '@appTypes/models'
+import { DEFAULT_GAME_LOCAL_VALUES, gameLocalDoc, type DocChangeResult } from '@appTypes/models'
 import { getValueByPath, setValueByPath } from '@appUtils'
 import type { Get, Paths } from 'type-fest'
 import { create, StoreApi, UseBoundStore } from 'zustand'
@@ -18,7 +18,7 @@ export interface SingleGameLocalState {
   setValue: <Path extends Paths<gameLocalDoc, { bracketNotation: true }>>(
     path: Path,
     value: Get<gameLocalDoc, Path>
-  ) => Promise<void>
+  ) => Promise<DocChangeResult | undefined>
 
   initialize: (data: gameLocalDoc) => void
 
@@ -50,7 +50,7 @@ export function getGameLocalStore(gameId: string): GameLocalStore {
       setValue: async <Path extends Paths<gameLocalDoc, { bracketNotation: true }>>(
         path: Path,
         value: Get<gameLocalDoc, Path>
-      ): Promise<void> => {
+      ): Promise<DocChangeResult | undefined> => {
         // Create a deep copy of the current data
         const currentData = get().data ? JSON.parse(JSON.stringify(get().data)) : {}
 
@@ -70,7 +70,12 @@ export function getGameLocalStore(gameId: string): GameLocalStore {
             .updateGameMeta(gameId, { gamePath: currentData.path?.gamePath || '' })
         }
 
-        await syncTo('game-local', gameId, currentData)
+        const result = await syncTo('game-local', gameId, currentData)
+        if (result.data) {
+          set({ data: result.data })
+          useGameRegistry.getState().updateGameMeta(gameId, { gamePath: result.data.path.gamePath })
+        }
+        return result
       },
 
       initialize: (data: gameLocalDoc): void => {

@@ -1,5 +1,6 @@
 import path from 'path'
 import { platform } from 'os'
+import type { gameLocalDoc } from '@appTypes/models'
 
 const IS_WINDOWS = platform() === 'win32'
 
@@ -171,6 +172,108 @@ export function inferRootPath(markPath: string, scanRoot?: string): string {
   }
 
   return prefix + cleanSegments.slice(0, boundaryIndex + 1).join(path.sep)
+}
+
+/**
+ * Relocate the launcher and monitor fields that are known to be derived from the
+ * game installation. External launchers, browser paths, and script commands are
+ * intentionally excluded because their path semantics cannot be inferred safely.
+ */
+function inferRelocationRootPath(gamePath: string): string {
+  const gameDirectory = path.dirname(gamePath)
+  const inferredRootPath = inferRootPath(gameDirectory)
+  if (!pathEquals(inferredRootPath, gameDirectory)) {
+    return inferredRootPath
+  }
+
+  const segments = normalizePath(gameDirectory).split('/').filter(Boolean)
+  const hasDriveRoot = IS_WINDOWS && segments[0]?.endsWith(':')
+  const installationDirectory = hasDriveRoot ? segments[1] : undefined
+
+  // inferRootPath intentionally returns the original directory when every
+  // segment matches a known runtime layout pattern. For relocation only, that
+  // would make root-level launchers fall outside the root. On Windows drive
+  // paths, preserve the first directory below the volume as the installation
+  // root instead.
+  if (installationDirectory && segments.slice(1).every(isSubDirectoryPattern)) {
+    return `${segments[0]}${path.sep}${installationDirectory}`
+  }
+
+  return inferredRootPath
+}
+
+export function relocateGameLocalPaths(
+  oldGamePath: string,
+  newGamePath: string,
+  gameLocalDoc: gameLocalDoc
+): { doc: gameLocalDoc; relocatedFieldCount: number } {
+  if (!oldGamePath || !newGamePath || pathEquals(oldGamePath, newGamePath)) {
+    return { doc: gameLocalDoc, relocatedFieldCount: 0 }
+  }
+
+  const oldRootPath = inferRelocationRootPath(oldGamePath)
+  const newRootPath = inferRelocationRootPath(newGamePath)
+  if (!oldRootPath || !newRootPath) {
+    return { doc: gameLocalDoc, relocatedFieldCount: 0 }
+  }
+
+  const relocatePath = (candidatePath: string): string => {
+    if (!candidatePath || !isPathWithinRoot(candidatePath, oldRootPath)) {
+      return candidatePath
+    }
+
+    return path.join(newRootPath, path.relative(oldRootPath, candidatePath))
+  }
+
+  const filePath = relocatePath(gameLocalDoc.launcher?.fileConfig?.path)
+  const fileMonitorPath = relocatePath(gameLocalDoc.launcher?.fileConfig?.monitorPath)
+  const urlMonitorPath = relocatePath(gameLocalDoc.launcher?.urlConfig?.monitorPath)
+  const scriptWorkingDirectory = relocatePath(gameLocalDoc.launcher?.scriptConfig?.workingDirectory)
+  const scriptMonitorPath = relocatePath(gameLocalDoc.launcher?.scriptConfig?.monitorPath)
+
+  const relocatedFieldCount = [
+    [gameLocalDoc.launcher?.fileConfig?.path, filePath],
+    [gameLocalDoc.launcher?.fileConfig?.monitorPath, fileMonitorPath],
+    [gameLocalDoc.launcher?.urlConfig?.monitorPath, urlMonitorPath],
+    [gameLocalDoc.launcher?.scriptConfig?.workingDirectory, scriptWorkingDirectory],
+    [gameLocalDoc.launcher?.scriptConfig?.monitorPath, scriptMonitorPath]
+  ].filter(([oldPath, relocatedPath]) => oldPath !== relocatedPath).length
+
+  if (relocatedFieldCount === 0) {
+    return { doc: gameLocalDoc, relocatedFieldCount }
+  }
+
+  const launcher = gameLocalDoc.launcher
+  return {
+    doc: {
+      ...gameLocalDoc,
+      launcher: {
+        ...launcher,
+        ...(launcher.fileConfig
+          ? {
+              fileConfig: {
+                ...launcher.fileConfig,
+                path: filePath,
+                monitorPath: fileMonitorPath
+              }
+            }
+          : {}),
+        ...(launcher.urlConfig
+          ? { urlConfig: { ...launcher.urlConfig, monitorPath: urlMonitorPath } }
+          : {}),
+        ...(launcher.scriptConfig
+          ? {
+              scriptConfig: {
+                ...launcher.scriptConfig,
+                workingDirectory: scriptWorkingDirectory,
+                monitorPath: scriptMonitorPath
+              }
+            }
+          : {})
+      }
+    },
+    relocatedFieldCount
+  }
 }
 
 /**

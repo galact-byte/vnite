@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useRef } from 'react'
 import { getGameLocalStore } from '~/stores/game/gameLocalStoreFactory'
-import type { gameLocalDoc } from '@appTypes/models'
+import type { DocChangeResult, gameLocalDoc } from '@appTypes/models'
 import type { Get, Paths } from 'type-fest'
 import { isEqual } from 'lodash'
 
@@ -15,10 +15,13 @@ export function useGameLocalState<
   ? [
       Get<gameLocalDoc, Path>,
       (value: Get<gameLocalDoc, Path>) => void,
-      () => Promise<void>,
-      (value: Get<gameLocalDoc, Path>) => Promise<void>
+      () => Promise<DocChangeResult | undefined>,
+      (value: Get<gameLocalDoc, Path>) => Promise<DocChangeResult | undefined>
     ]
-  : [Get<gameLocalDoc, Path>, (value: Get<gameLocalDoc, Path>) => Promise<void>] {
+  : [
+      Get<gameLocalDoc, Path>,
+      (value: Get<gameLocalDoc, Path>) => Promise<DocChangeResult | undefined>
+    ] {
   const gameLocalStore = getGameLocalStore(gameId)
   const initialValue = gameLocalStore.getState().getValue(path)
 
@@ -57,23 +60,24 @@ export function useGameLocalState<
   }, [gameId, path, saveMode])
 
   const setValue = useCallback(
-    async (newValue: Get<gameLocalDoc, Path>) => {
+    async (newValue: Get<gameLocalDoc, Path>): Promise<DocChangeResult | undefined> => {
       if (isEqual(newValue, localValue)) return
 
       if (saveMode) {
         // Save mode: Only update local state, don't modify the store
         setLocalValue(newValue)
-      } else {
-        // Immediate mode: Update local state first for immediate response
-        setLocalValue(newValue)
-        // Then update the store
-        return gameLocalStore.getState().setValue(path, newValue)
+        return undefined
       }
+
+      // Immediate mode: Update local state first for immediate response
+      setLocalValue(newValue)
+      // Then update the store
+      return await gameLocalStore.getState().setValue(path, newValue)
     },
     [saveMode, localValue, gameLocalStore, path]
   )
 
-  const save = useCallback(async () => {
+  const save = useCallback(async (): Promise<DocChangeResult | undefined> => {
     if (!saveMode) return
 
     // Get the current value from the ref
@@ -82,23 +86,25 @@ export function useGameLocalState<
     if (isEqual(currentValue, originalValue)) return
 
     // Apply the local changes to the store
-    await gameLocalStore.getState().setValue(path, currentValue)
+    const result = await gameLocalStore.getState().setValue(path, currentValue)
 
     // Update original value to match the saved value
     setOriginalValue(currentValue)
+    return result
   }, [saveMode, path, originalValue, gameLocalStore])
 
   const setValueAndSave = useCallback(
-    async (newValue: Get<gameLocalDoc, Path>) => {
+    async (newValue: Get<gameLocalDoc, Path>): Promise<DocChangeResult | undefined> => {
       if (isEqual(newValue, localValue) || !saveMode) return
 
       // Update local state
       setLocalValue(newValue)
 
       // Save directly to store
-      await gameLocalStore.getState().setValue(path, newValue)
+      const result = await gameLocalStore.getState().setValue(path, newValue)
 
       setOriginalValue(newValue)
+      return result
     },
     [localValue, gameLocalStore, path, saveMode]
   )
