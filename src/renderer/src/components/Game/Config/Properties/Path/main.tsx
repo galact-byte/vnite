@@ -51,6 +51,7 @@ function SavePathSyncStatus({
   const [isCloud, setIsCloud] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false)
   // 云端已有条目时的二选一弹窗数据;为 null 时弹窗关闭
   const [conflict, setConflict] = useState<{
     local: SaveSyncSideMeta
@@ -111,18 +112,19 @@ function SavePathSyncStatus({
       .finally(() => setLoading(false))
   }
 
-  const handleRestore = (): void => {
+  const copyToLocal = (): void => {
+    setShowRestoreConfirm(false)
     setLoading(true)
     const p = ipcManager.invoke('game:restore-save-from-sync-space', gameId, savePath)
     toast.promise(p, {
-      loading: t('detail.properties.path.syncSpace.restoring'),
+      loading: t('detail.properties.path.syncSpace.copyToLocalLoading'),
       success: () => {
         checkStatus()
-        return t('detail.properties.path.syncSpace.restoreSuccess')
+        return t('detail.properties.path.syncSpace.copyToLocalSuccess')
       },
       error: (err) => {
         checkStatus()
-        return `${t('detail.properties.path.syncSpace.restoreError')}: ${err.message}`
+        return `${t('detail.properties.path.syncSpace.copyToLocalError')}: ${err.message}`
       }
     })
     p.finally(() => setLoading(false))
@@ -152,9 +154,14 @@ function SavePathSyncStatus({
         </div>
         <div>
           {isCloud ? (
-            <Button variant="outline" size="sm" onClick={handleRestore} disabled={loading}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowRestoreConfirm(true)}
+              disabled={loading}
+            >
               <DownloadCloud className="w-3.5 h-3.5 mr-1" />
-              {t('detail.properties.path.syncSpace.restoreBtn')}
+              {t('detail.properties.path.syncSpace.copyToLocalBtn')}
             </Button>
           ) : (
             <Button variant="outline" size="sm" onClick={handleConvert} disabled={loading}>
@@ -164,6 +171,25 @@ function SavePathSyncStatus({
           )}
         </div>
       </div>
+      <AlertDialog open={showRestoreConfirm} onOpenChange={setShowRestoreConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('detail.properties.path.syncSpace.copyToLocalConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('detail.properties.path.syncSpace.copyToLocalConfirmDesc')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('utils:common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={copyToLocal}>
+              {t('detail.properties.path.syncSpace.copyToLocalBtn')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>

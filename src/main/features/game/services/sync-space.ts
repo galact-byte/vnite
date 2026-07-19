@@ -2,6 +2,7 @@ import log from 'electron-log/main'
 import fse from 'fs-extra'
 import path from 'path'
 import os from 'os'
+import { randomUUID } from 'crypto'
 import { ConfigDBManager, GameDBManager } from '~/core/database'
 import { walkFs } from '~/utils'
 import fs from 'fs'
@@ -457,10 +458,55 @@ export async function convertSaveToSyncSpace(
   }
 }
 
+function createRestoreStagingPath(savePath: string): string {
+  return path.join(
+    path.dirname(savePath),
+    `.vnite-restore-${path.basename(savePath)}-${randomUUID()}`
+  )
+}
+
 /**
- * Restore a save path from sync space back to local.
- * Removes the link and moves the actual files back. If the move fails, the
- * link is re-created so the save stays reachable at its original location.
+ * Restore the original link after a local-only restore failure. The sync-space
+ * target is deliberately never removed or moved: if recovery cannot complete,
+ * the target and staging copy are logged as manually recoverable locations.
+ */
+async function restoreLinkAfterFailedLocalCopy(
+  savePath: string,
+  targetPath: string,
+  isDirectory: boolean,
+  stagingPath: string
+): Promise<void> {
+  try {
+    const localStat = await fse.lstat(savePath).catch(() => null)
+    if (!localStat?.isSymbolicLink()) {
+      await fse.remove(savePath)
+      await createLink(targetPath, savePath, isDirectory)
+    }
+  } catch (linkError) {
+    log.error(
+      `[SyncSpace] Rollback failed; sync-space original remains at ${targetPath} ` +
+        `and local staging remains at ${stagingPath}:`,
+      linkError
+    )
+    return
+  }
+
+  try {
+    await fse.remove(stagingPath)
+  } catch (cleanupError) {
+    log.error(
+      `[SyncSpace] Restored link, but local staging remains at ${stagingPath}; ` +
+        `sync-space original remains at ${targetPath}:`,
+      cleanupError
+    )
+  }
+}
+
+/**
+ * Copy a linked save out of the sync space and stop linking it. A complete
+ * sibling staging copy is made before the link is removed, so a copy failure
+ * leaves the original link untouched. The sync-space target is never moved,
+ * removed, or overwritten by this operation.
  */
 export async function restoreSaveFromSyncSpace(gameId: string, savePath: string): Promise<void> {
   try {
@@ -472,20 +518,35 @@ export async function restoreSaveFromSyncSpace(gameId: string, savePath: string)
     const targetPath = await fse.realpath(savePath)
     const targetStat = await fse.stat(targetPath)
     const isDirectory = targetStat.isDirectory()
+    const stagingPath = createRestoreStagingPath(savePath)
 
-    log.info(`[SyncSpace] Removing link at ${savePath}`)
-    await fse.remove(savePath)
-
-    log.info(`[SyncSpace] Moving ${targetPath} back to ${savePath}`)
     try {
-      await fse.move(targetPath, savePath, { overwrite: false })
-    } catch (moveError) {
-      // Roll back: re-create the link so the save stays reachable
-      log.error('[SyncSpace] Move failed, re-creating link:', moveError)
-      await createLink(targetPath, savePath, isDirectory).catch((linkError) => {
-        log.error('[SyncSpace] Failed to re-create link during rollback:', linkError)
-      })
-      throw moveError
+      log.info(`[SyncSpace] Copying ${targetPath} to local staging ${stagingPath}`)
+      await fse.copy(targetPath, stagingPath)
+    } catch (copyError) {
+      log.error('[SyncSpace] Failed to copy sync-space save to local staging:', copyError)
+      try {
+        await fse.remove(stagingPath)
+      } catch (cleanupError) {
+        log.error(
+          `[SyncSpace] Staging cleanup failed; original link remains at ${savePath} ` +
+            `and incomplete local copy remains at ${stagingPath}:`,
+          cleanupError
+        )
+      }
+      throw copyError
+    }
+
+    try {
+      log.info(`[SyncSpace] Removing link at ${savePath}`)
+      await fse.remove(savePath)
+
+      log.info(`[SyncSpace] Committing local staging ${stagingPath} to ${savePath}`)
+      await fse.move(stagingPath, savePath, { overwrite: false })
+    } catch (commitError) {
+      log.error('[SyncSpace] Failed to commit local copy, restoring link:', commitError)
+      await restoreLinkAfterFailedLocalCopy(savePath, targetPath, isDirectory, stagingPath)
+      throw commitError
     }
   } catch (error) {
     log.error(`[SyncSpace] Error restoring ${savePath} from sync space:`, error)
