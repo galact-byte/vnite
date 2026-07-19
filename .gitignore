@@ -29,3 +29,8 @@ vnite-webdav-sync-plan.md
 
 # Temp verification scripts
 .verify-tmp/
+
+# Keep the executable relocation contract under version control; ignore all other temporary artifacts.
+!.verify-tmp/
+.verify-tmp/*
+!.verify-tmp/path-relocation-live-test.ts

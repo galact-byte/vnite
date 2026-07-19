@@ -604,7 +604,8 @@
         },
         "notifications": {
           "configuring": "Configuring preset…",
-          "success": "Preset configured successfully"
+          "success": "Preset configured successfully",
+          "pathsRelocated": "Launch and tracking paths updated to the new game location"
         }
       },
       "media": {

@@ -6,3 +6,8 @@ export interface AttachmentChange {
 }
 
 export type DocChange = { dbName: string; docId: string; data: any; timestamp: number }
+
+export type DocChangeResult = {
+  relocatedFieldCount: number
+  data?: import('./game').gameLocalDoc
+}

@@ -604,7 +604,8 @@
         },
         "notifications": {
           "configuring": "正在配置预设…",
-          "success": "预设配置成功"
+          "success": "预设配置成功",
+          "pathsRelocated": "已同步更新启动与监控路径"
         }
       },
       "media": {
