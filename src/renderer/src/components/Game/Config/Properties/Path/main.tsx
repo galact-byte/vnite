@@ -101,6 +101,7 @@ function SavePathSyncStatus({
         if (probe.status === 'conflict') {
           setConflict({ local: probe.local, cloud: probe.cloud })
         } else if (probe.status === 'already-in-sync') {
+          toast.info(t('detail.properties.path.syncSpace.alreadyInSync'))
           checkStatus()
         } else {
           setShowConfirm(true)
