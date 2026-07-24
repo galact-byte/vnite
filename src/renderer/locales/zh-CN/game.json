@@ -583,6 +583,7 @@
           "converting": "正在转换存档至同步空间...",
           "convertSuccess": "已成功转换至同步空间，并创建软链接",
           "convertError": "转换至同步空间失败",
+          "alreadyInSync": "该存档已在同步空间中",
           "copyToLocalLoading": "正在转至本地...",
           "copyToLocalSuccess": "已转至本地；两侧存档现已相互独立。",
           "copyToLocalError": "转至本地失败",

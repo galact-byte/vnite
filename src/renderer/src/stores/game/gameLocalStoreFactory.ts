@@ -73,7 +73,9 @@ export function getGameLocalStore(gameId: string): GameLocalStore {
         const result = await syncTo('game-local', gameId, currentData)
         if (result.data) {
           set({ data: result.data })
-          useGameRegistry.getState().updateGameMeta(gameId, { gamePath: result.data.path.gamePath })
+          useGameRegistry
+            .getState()
+            .updateGameMeta(gameId, { gamePath: result.data.path?.gamePath ?? '' })
         }
         return result
       },

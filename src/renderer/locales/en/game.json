@@ -583,6 +583,7 @@
           "converting": "Converting save to sync space...",
           "convertSuccess": "Successfully converted to sync space and linked",
           "convertError": "Failed to convert to sync space",
+          "alreadyInSync": "This save is already in the sync space",
           "copyToLocalLoading": "Converting to local...",
           "copyToLocalSuccess": "Converted to local. The two save copies are now independent.",
           "copyToLocalError": "Failed to convert to local",
