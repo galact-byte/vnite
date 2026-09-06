@@ -38,19 +38,57 @@ async function fetchSteamAPI(url: string): Promise<any> {
   return response.json()
 }
 
+// Region-locked games are only sold in specific Steam regions. The appdetails
+// API keys its `success` flag off the requester's store region (derived from IP
+// or the `cc` param), so a region-locked game returns `success:false` ("invalid
+// ID") from the default region even though it can be found by name search (which
+// already probes multiple regions). Probe the same candidate regions here so
+// identification by App ID succeeds for region-locked titles.
+function getCandidateCountryCodes(): string[] {
+  const langConfig = i18next.t('scraper:steam.config', {
+    returnObjects: true
+  }) as SteamLanguageConfig
+
+  return Array.from(new Set([langConfig.countryCode, 'HK', 'US', 'JP'].filter(Boolean)))
+}
+
+async function fetchSteamAppDetails(
+  appId: string,
+  language: string
+): Promise<SteamAppDetailsResponse> {
+  const candidateCC = getCandidateCountryCodes()
+  let lastData: SteamAppDetailsResponse | null = null
+
+  for (const cc of candidateCC) {
+    try {
+      const url = `${STEAM_URLS.STORE}/api/appdetails?appids=${appId}&l=${language}&cc=${cc}`
+      const data = (await fetchSteamAPI(url)) as SteamAppDetailsResponse
+      lastData = data
+      if (data[appId]?.success) {
+        return data
+      }
+    } catch (error) {
+      console.error(`Error fetching appdetails for ${appId} in region ${cc}:`, error)
+    }
+  }
+
+  // Return the last response so callers can handle `success:false` uniformly.
+  return lastData ?? ({ [appId]: { success: false, data: {} } } as SteamAppDetailsResponse)
+}
+
 export async function searchSteamGames(gameName: string): Promise<GameList> {
   try {
     const langConfig = i18next.t('scraper:steam.config', {
       returnObjects: true
     }) as SteamLanguageConfig
 
-    const candidateCC = new Set([langConfig.countryCode, 'HK', 'US', 'JP'].filter(Boolean))
+    const candidateCC = getCandidateCountryCodes()
     const urlBase = `${STEAM_URLS.STORE}/api/storesearch/?term=${encodeURIComponent(
       gameName
     )}&l=${langConfig.apiLanguageCode || 'english'}`
 
     const resultsPerRegion = await Promise.all(
-      Array.from(candidateCC).map(async (cc) => {
+      candidateCC.map(async (cc) => {
         const url = `${urlBase}&cc=${cc}`
         try {
           const response = (await fetchSteamAPI(url)) as SteamStoreSearchResponse
@@ -141,11 +179,10 @@ export async function getSteamMetadata(appId: string): Promise<GameMetadata> {
       returnObjects: true
     }) as SteamLanguageConfig
 
-    // Get data in the current language
-    const urlLocal = `${STEAM_URLS.STORE}/api/appdetails?appids=${appId}&l=${langConfig.apiLanguageCode || 'english'}`
+    const language = langConfig.apiLanguageCode || 'english'
 
     // Determine if we need to get the original English name (if current language is not English)
-    const needsOriginalName = langConfig.apiLanguageCode !== 'english'
+    const needsOriginalName = language !== 'english'
 
     let localData: SteamAppDetailsResponse
     let englishData: SteamAppDetailsResponse | null = null
@@ -153,12 +190,12 @@ export async function getSteamMetadata(appId: string): Promise<GameMetadata> {
     if (needsOriginalName) {
       // Fetch local language and English data in parallel
       ;[localData, englishData] = await Promise.all([
-        fetchSteamAPI(urlLocal),
-        fetchSteamAPI(`${STEAM_URLS.STORE}/api/appdetails?appids=${appId}&l=english`)
+        fetchSteamAppDetails(appId, language),
+        fetchSteamAppDetails(appId, 'english')
       ])
     } else {
       // Only fetch one language
-      localData = await fetchSteamAPI(urlLocal)
+      localData = await fetchSteamAppDetails(appId, language)
       englishData = localData // Reuse if current language is English
     }
 
@@ -264,10 +301,7 @@ export async function getGameScreenshots(appId: string): Promise<string[]> {
     returnObjects: true
   }) as SteamLanguageConfig
 
-  // Get data in the current language
-  const urlLocal = `${STEAM_URLS.STORE}/api/appdetails?appids=${appId}&l=${langConfig.apiLanguageCode || 'english'}`
-
-  const data = (await fetchSteamAPI(urlLocal)) as SteamAppDetailsResponse
+  const data = await fetchSteamAppDetails(appId, langConfig.apiLanguageCode || 'english')
   return data[appId]?.success
     ? data[appId].data.screenshots?.map((screenshot) => screenshot.path_full) || []
     : []
@@ -278,8 +312,7 @@ export async function getGameHeader(appId: string): Promise<string> {
     returnObjects: true
   }) as SteamLanguageConfig
 
-  const urlLocal = `${STEAM_URLS.STORE}/api/appdetails?appids=${appId}&l=${langConfig.apiLanguageCode || 'english'}`
-  const data = (await fetchSteamAPI(urlLocal)) as SteamAppDetailsResponse
+  const data = await fetchSteamAppDetails(appId, langConfig.apiLanguageCode || 'english')
 
   // Steam appdetails exposes the store header capsule URL as header_image.
   return data[appId]?.success ? data[appId].data.header_image || '' : ''
@@ -350,8 +383,7 @@ export async function getGameLogo(appId: string): Promise<string> {
 
 export async function checkSteamGameExists(appId: string): Promise<boolean> {
   try {
-    const url = `${STEAM_URLS.STORE}/api/appdetails?appids=${appId}`
-    const data = (await fetchSteamAPI(url)) as SteamAppDetailsResponse
+    const data = await fetchSteamAppDetails(appId, 'english')
     return data[appId]?.success || false
   } catch (error) {
     console.error(`Error checking game existence for ID ${appId}:`, error)
