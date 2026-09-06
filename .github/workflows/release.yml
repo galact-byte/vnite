@@ -60,6 +60,6 @@ jobs:
         with:
           files: ${{ steps.find-exe.outputs.path }}
           draft: false
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
