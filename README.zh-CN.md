@@ -19,6 +19,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+> [!NOTE]
+> **本仓库是 [ximu3/vnite](https://github.com/ximu3/vnite) 的个人 fork。** 原项目由 [ximu3](https://github.com/ximu3) 开发，建议优先前往上游 Star 支持。本 fork 在其基础上新增：
+>
+> - 基于 WebDAV 的增量云同步引擎，支持逐冲突解决（与上游 CouchDB 同步并存）
+> - 游戏存档“同步空间”转移，可配合 OneDrive / 百度网盘等通过目录软链接无感同步
+> - 修复：区域锁游戏可通过 Steam App ID 识别，而不仅仅能按名搜索
+>
+> 本 fork 的构建发布在 [Releases 页面](https://github.com/galact-byte/vnite/releases)。
+
 Vnite 是一个多功能的游戏管理软件，旨在提供一个统一的用户界面来 记录、管理、同步 您的游戏之旅。
 
 ## ✨ 功能
