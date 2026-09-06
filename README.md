@@ -19,6 +19,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+> [!NOTE]
+> **This is a personal fork of [ximu3/vnite](https://github.com/ximu3/vnite).** The original project is created by [ximu3](https://github.com/ximu3) — please star and support upstream. This fork adds:
+>
+> - WebDAV incremental cloud-sync engine with per-conflict resolution (alongside the upstream CouchDB sync)
+> - Game-save **Sync Space** transfer via directory junctions (OneDrive / Baidu Netdisk)
+> - Fix: region-locked Steam titles can be identified by Steam App ID, not only by name search
+>
+> Builds from this fork are on its [Releases page](https://github.com/galact-byte/vnite/releases).
+
 Vnite is a versatile game management software designed to provide a unified interface for recording, managing, and synchronizing your gaming journey.
 
 ## ✨ Features
