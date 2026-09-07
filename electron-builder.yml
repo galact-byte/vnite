@@ -68,5 +68,5 @@ npmRebuild: false
 
 publish:
   provider: github
-  owner: ximu3
+  owner: galact-byte
   repo: vnite
