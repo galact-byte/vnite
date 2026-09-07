@@ -257,6 +257,22 @@ export function Search({ className }: { className?: string }): React.JSX.Element
               />
               <Button onClick={recognizeGame}>{t('gameAdder.search.recognizeButton')}</Button>
             </div>
+
+            {/* Optional game path (attach local game while scraping metadata) */}
+            <div className={cn('whitespace-nowrap select-none')}>
+              {t('gameAdder.search.gamePath')}
+            </div>
+            <div className={cn('flex flex-row gap-3')}>
+              <Input
+                className={cn('flex-1')}
+                placeholder={t('gameAdder.search.gamePathPlaceholder')}
+                value={gamePath || dirPath}
+                readOnly
+              />
+              <Button variant={'outline'} size={'icon'} onClick={selectGamePath}>
+                <span className={cn('icon-[mdi--file-outline] w-5 h-5')}></span>
+              </Button>
+            </div>
           </>
         ) : (
           <>
