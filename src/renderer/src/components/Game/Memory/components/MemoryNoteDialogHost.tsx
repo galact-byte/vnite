@@ -1,0 +1,51 @@
+import { useEffect } from 'react'
+
+import type { gameDoc } from '@appTypes/models'
+import { useMemoryStore } from '../store'
+import { NoteDialog } from './NoteDialog'
+
+type MemoryList = gameDoc['memory']['memoryList']
+
+export function MemoryNoteDialogHost({
+  gameId,
+  memoryList,
+  saveNote
+}: {
+  gameId: string
+  memoryList: MemoryList
+  saveNote: (memoryId: string, note: string) => Promise<void>
+}): React.JSX.Element | null {
+  const noteDialog = useMemoryStore((state) => state.noteDialog)
+  const closeNoteDialog = useMemoryStore((state) => state.closeNoteDialog)
+
+  useEffect(() => {
+    return (): void => {
+      closeNoteDialog()
+    }
+  }, [closeNoteDialog])
+
+  const memory = noteDialog.open ? memoryList[noteDialog.memoryId] : null
+
+  useEffect(() => {
+    if (noteDialog.open && !memory) {
+      closeNoteDialog()
+    }
+  }, [closeNoteDialog, memory, noteDialog])
+
+  if (!noteDialog.open || !memory) return null
+
+  return (
+    <NoteDialog
+      key={`memory-note-${noteDialog.memoryId}-${noteDialog.initialMode}`}
+      gameId={gameId}
+      setIsOpen={(open) => {
+        if (!open) {
+          closeNoteDialog()
+        }
+      }}
+      note={memory.note ?? ''}
+      saveNote={(note) => saveNote(noteDialog.memoryId, note)}
+      initialMode={noteDialog.initialMode}
+    />
+  )
+}

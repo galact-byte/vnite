@@ -18,6 +18,8 @@
     "minimizeToTray": "トレイに最小化",
     "hideWindowAfterGameStart": "ゲーム起動後にトレイに最小化する",
     "hideWindowAfterGameStartDescription": "ゲーム起動後に自動的にメインウィンドウを隠す",
+    "showWindowAfterGameExit": "ゲーム終了後にメインウィンドウを表示",
+    "showWindowAfterGameExitDescription": "ゲームの終了を検出した後、Vnite のメインウィンドウを自動的に表示して前面に切り替える",
     "timerTitle": "ゲームタイマー",
     "foregroundTimer": {
       "title": "フォアグラウンドタイマー",
@@ -173,7 +175,13 @@
       "gridColumnWidth": "カード列幅",
       "gridColumnWidthDescription": "メモリー領域の利用可能な幅とこのピクセル値に基づいて、カード表示の列数を自動計算します",
       "masonryColumnWidth": "ギャラリー列幅",
-      "masonryColumnWidthDescription": "メモリー領域の利用可能な幅とこのピクセル値に基づいて、ギャラリーの列数を自動計算します"
+      "masonryColumnWidthDescription": "メモリー領域の利用可能な幅とこのピクセル値に基づいて、ギャラリーの列数を自動計算します",
+      "fullColumnWidth": "画像・テキスト列幅",
+      "fullColumnWidthDescription": "メモリー領域の利用可能な幅とこのピクセル値に基づいて、画像・テキスト表示の列数を自動計算します",
+      "showAddCoverHoverButton": "カバー追加ホバーボタンを表示",
+      "showAddCoverHoverButtonDescription": "カード表示と画像・テキスト表示で、カバーのないメモリーにカバー追加ショートカットを表示します",
+      "showAddNoteHoverButton": "ノート追加ホバーボタンを表示",
+      "showAddNoteHoverButtonDescription": "カード表示と画像・テキスト表示で、ノートのないメモリーにノート追加ショートカットを表示します"
     },
     "sidebar": {
       "title": "サイドバー",
@@ -282,6 +290,41 @@
         "iconPathRequired": "先に実行ファイルのパスを入力してください",
         "extractIconFailed": "プログラムアイコンの取得に失敗しました: {{message}}",
         "removeToolFailed": "ツールの削除に失敗しました: {{message}}"
+      }
+    },
+    "launcherPresets": {
+      "title": "ランチャー・追跡プリセット",
+      "variables": "利用可能な変数（クリックしてコピー）",
+      "newPreset": "新しいプリセット",
+      "unnamedPreset": "無名のプリセット",
+      "empty": "カスタムプリセットはありません",
+      "selectPreset": "表示または編集するプリセットを選択してください",
+      "duplicate": "複製",
+      "launchMode": "起動モード",
+      "mode": {
+        "file": "ファイル",
+        "url": "URL",
+        "script": "スクリプト"
+      },
+      "filePath": "ファイルパス",
+      "url": "URL",
+      "browserPath": "ブラウザーパス（任意）",
+      "command": "スクリプト内容",
+      "workingDirectory": "作業ディレクトリ",
+      "monitorMode": "追跡モード",
+      "monitor": {
+        "folder": "フォルダー",
+        "file": "ファイル",
+        "process": "プロセス"
+      },
+      "monitorPath": "追跡パス",
+      "processName": "プロセス名",
+      "validation": {
+        "name-required": "プリセット名を入力してください",
+        "duplicate-name": "カスタムプリセット名は重複できません"
+      },
+      "notifications": {
+        "variableCopied": "変数をコピーしました"
       }
     }
   },

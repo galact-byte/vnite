@@ -5,11 +5,11 @@ import {
   EventHistoryQuery,
   EventType
 } from '@appTypes/event'
-import { PosterRenderArgs, RenderResponse, TemplatePayloads } from '@appTypes/poster'
+import { ReportExportRequest, ReportExportResponse } from '@appTypes/report'
 import type { SaveSyncProbeResult, SaveSyncResolution } from '@appTypes/sync'
 import { BatchUpdateGameMetadataProgress, OverallScanProgress } from '@appTypes/utils'
 import { ProgressInfo, UpdateCheckResult } from 'electron-updater'
-import type { GameMediaType } from './models'
+import type { GameMediaType, LauncherPresetApplyResult } from './models'
 import {
   BatchGameInfo,
   configDocs,
@@ -114,9 +114,9 @@ type MainIpcEvents =
         extensions?: string[],
         defaultPath?: string
       ) => string[] | undefined
-      'system:save-image-as-file-dialog': (sourcePath: string) => boolean
       'system:get-path-size': (paths: string[]) => number
       'system:read-file-buffer': (filePath: string) => Buffer
+      'system:write-text-file': (filePath: string, content: string) => void
       'system:open-path-in-explorer': (filePath: string) => void
       'system:get-language': () => string
       'system:check-admin-permissions': () => boolean
@@ -127,7 +127,6 @@ type MainIpcEvents =
         hotkeyName: keyof configLocalDocs['hotkeys'],
         hotkey: string
       ) => { success: true } | { success: false; reason: 'registrationFailed' | 'unknown' }
-      'system:delete-temp-file': (path: string) => void
 
       'app:update-language': (language: string) => void
       'app:get-app-version': () => string
@@ -147,10 +146,8 @@ type MainIpcEvents =
       }) => string
       'utils:save-game-icon-by-file': (gameId: string, filePath: string) => void
       'utils:download-temp-image': (url: string) => string
-      'utils:resolve-image-source-to-file-path': (source: string) => string
       'utils:test-upscaler': () => void
       'utils:save-clipboard-image': () => string
-      'utils:write-clipboard-image': (data: string, type: 'path') => boolean
       'utils:get-app-log-contents-in-current-lifetime': () => string
       'utils:copy-app-log-in-current-lifetime-to-clipboard-as-file': () => void
       'utils:open-log-path-in-explorer': () => void
@@ -178,7 +175,6 @@ type MainIpcEvents =
       'db:get-all-docs': (dbName: string) => Record<string, any>
       'db:get-local-storage-report': () => LocalDatabaseStorageReport
       'db:get-game-storage-detail': (gameId: string) => GameDatabaseStorageDetail
-      'db:get-attachment-temp-file': (gameId: string, attachmentId: string) => string | null
       'db:remove-game-attachment': (gameId: string, attachmentId: string) => void
       'db:restart-sync': () => void
       'db:full-sync': () => void
@@ -350,7 +346,7 @@ type MainIpcEvents =
       'importer:get-steam-games': (steamId: string) => SteamFormattedGameInfo[]
       'importer:import-selected-steam-games': (games: SteamFormattedGameInfo[]) => number
 
-      'launcher:select-preset': (presetName: string, gameId: string, steamId?: string) => void
+      'launcher:select-preset': (presetId: string, gameId: string) => LauncherPresetApplyResult
 
       'toolbox:launch-tool': (tool: {
         path: string
@@ -474,9 +470,9 @@ type MainIpcEvents =
       'plugin:get-stats': () => PluginStatsData
       'plugin:get-plugin-configuration': (pluginId: string) => PluginConfiguration[]
 
-      'poster:render': <T extends keyof TemplatePayloads>(
-        args: PosterRenderArgs<T>
-      ) => RenderResponse
+      'report:create-font-subset': (text: string) => { dataUrl: string }
+
+      'report:export': (request: ReportExportRequest) => ReportExportResponse
     }
 
 // Renderer process IPC events - handled by renderer process

@@ -295,6 +295,9 @@ async function convertGame(gameId: string, gamePath: string): Promise<void> {
         autoRestoreSave: false
       },
       memory: {
+        preferences: {
+          viewMode: null
+        },
         memoryList: {}
       },
       apperance: {
@@ -326,7 +329,14 @@ async function convertGame(gameId: string, gamePath: string): Promise<void> {
     // Handling of memorized data
     if (memory && memory.memoryList) {
       Object.keys(memory.memoryList).forEach((memoryId) => {
-        if (!gameDoc.memory) gameDoc.memory = { memoryList: {} }
+        if (!gameDoc.memory) {
+          gameDoc.memory = {
+            preferences: {
+              viewMode: null
+            },
+            memoryList: {}
+          }
+        }
         gameDoc.memory.memoryList[memoryId] = {
           _id: memory.memoryList[memoryId].id,
           date: memory.memoryList[memoryId].date,
@@ -550,6 +560,8 @@ async function convertConfig(basePath: string): Promise<void> {
       quitToTray: v2Config.general.quitToTray,
       language: '',
       hideWindowAfterGameStart: true,
+      // 旧版本没有该开关，迁移时保持原有的退出后唤起行为，避免升级改变用户体验。
+      showWindowAfterGameExit: true,
       enableForegroundTimer: true,
       foregroundWaitTime: 10,
       ignoreShortInterruptions: 0,

@@ -20,24 +20,21 @@ import {
   openDatabasePathInExplorer,
   openPathInExplorer,
   readFileBuffer,
+  writeTextFile,
   saveClipboardImage,
-  saveImageAsFileDialog,
   selectMultiplePathDialog,
-  selectPathDialog,
-  writeClipboardImage
+  selectPathDialog
 } from '~/utils'
 import {
   checkIfPathExist,
   copyAppLogInCurrentLifetimeToClipboardAsFile,
   createGameShortcut,
-  deleteTempFile,
   getAppLogContentsInCurrentLifetime,
   getAppRootPath,
   getLanguage,
   getSystemFonts,
   openLogPathInExplorer,
   portableStore,
-  resolveImageSourceToFilePath,
   saveGameIconByFile,
   switchDatabaseMode,
   testUpscalerAvailability,
@@ -122,10 +119,6 @@ export function setupSystemIPC(): void {
     }
   )
 
-  ipcManager.handle('system:save-image-as-file-dialog', async (_event, sourcePath: string) => {
-    return await saveImageAsFileDialog(sourcePath)
-  })
-
   ipcManager.handle('system:get-fonts', async () => {
     return await getSystemFonts()
   })
@@ -136,10 +129,6 @@ export function setupSystemIPC(): void {
 
   ipcManager.handle('system:open-path-in-explorer', async (_, filePath: string) => {
     await openPathInExplorer(filePath)
-  })
-
-  ipcManager.handle('system:delete-temp-file', async (_, filePath: string) => {
-    await deleteTempFile(filePath)
   })
 
   ipcManager.handle('utils:open-database-path-in-explorer', async () => {
@@ -169,6 +158,13 @@ export function setupSystemIPC(): void {
   ipcManager.handle('system:read-file-buffer', async (_, filePath: string) => {
     return await readFileBuffer(filePath)
   })
+
+  ipcManager.handle(
+    'system:write-text-file',
+    async (_, filePath: string, content: string): Promise<void> => {
+      await writeTextFile(filePath, content)
+    }
+  )
 
   ipcManager.handle('system:get-language', async () => {
     return getLanguage()
@@ -228,24 +224,8 @@ export function setupSystemIPC(): void {
     return await saveClipboardImage()
   })
 
-  ipcManager.handle('utils:resolve-image-source-to-file-path', async (_, source: string) => {
-    return await resolveImageSourceToFilePath(source)
-  })
-
-  ipcManager.handle('utils:write-clipboard-image', async (_, data: string, type: 'path') => {
-    return await writeClipboardImage(data, type)
-  })
-
   ipcManager.handle('system:update-screenshot-hotkey', (_, hotkeyName, hotkey) => {
     return updateScreenshotHotkey(hotkeyName, hotkey)
-  })
-
-  mainWindow.on('maximize', () => {
-    ipcManager.send('window:maximized')
-  })
-
-  mainWindow.on('unmaximize', () => {
-    ipcManager.send('window:unmaximized')
   })
 
   ipcManager.on('system:change-process-monitor', async (_, monitor: 'new' | 'legacy') => {
