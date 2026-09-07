@@ -133,6 +133,9 @@ importers:
       i18next-resources-to-backend:
         specifier: ^1.2.1
         version: 1.2.1
+      icodec:
+        specifier: ^0.6.0
+        version: 0.6.0
       jwt-decode:
         specifier: ^4.0.0
         version: 4.0.0
@@ -4606,6 +4609,9 @@ packages:
 
   ico-endec@0.1.6:
     resolution: {integrity: sha512-ZdLU38ZoED3g1j3iEyzcQj+wAkY2xfWNkymszfJPoxucIUhK7NayQ+/C4Kv0nDFMIsbtbEHldv3V8PU494/ueQ==}
+
+  icodec@0.6.0:
+    resolution: {integrity: sha512-m9ptjNaqBTmnTOc7CkNgTXFrAY6QBjiyri6Ba66AGfGN1+OWPBej8cKgeZ+LwKH53zwDu36zukX2PaO8NTUMbw==}
 
   iconv-corefoundation@1.1.7:
     resolution: {integrity: sha512-T10qvkw0zz4wnm560lOEg0PovVqUXuOFhhHAkixw8/sycy7TJt7v/RrkEKEQnAw2viPSJu6iAkErxnzR0g8PpQ==}
@@ -11832,6 +11838,8 @@ snapshots:
       typescript: 5.8.3
 
   ico-endec@0.1.6: {}
+
+  icodec@0.6.0: {}
 
   iconv-corefoundation@1.1.7:
     dependencies:

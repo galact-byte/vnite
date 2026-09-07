@@ -128,6 +128,27 @@ export async function convertToWebP(
         .toBuffer()
     }
 
+    return await encodeBufferToWebP(imageBuffer, options)
+  } catch (error) {
+    console.error('Error converting image to WebP:', error)
+    throw error
+  }
+}
+
+/**
+ * Encode an in-memory image buffer to WebP via Sharp.
+ *
+ * Sharp's prebuilt libvips only decodes 8-bit AVIF, so 10/12-bit AVIF (e.g. some
+ * Steam description images) fail to decode and stay as external links (#607).
+ * When Sharp fails and the input is AVIF, fall back to icodec (libavif + aom),
+ * which handles 8/10/12-bit, then hand the raw RGBA back to Sharp for WebP
+ * encoding. The 8-bit path is untouched, so this is a pure fallback.
+ */
+async function encodeBufferToWebP(
+  imageBuffer: Buffer,
+  options: { quality?: number; animated?: boolean }
+): Promise<Buffer> {
+  try {
     const metadata = await sharp(imageBuffer).metadata()
 
     let isAnimated = false
@@ -144,9 +165,62 @@ export async function convertToWebP(
       })
       .toBuffer()
   } catch (error) {
-    console.error('Error converting image to WebP:', error)
+    if (isAvifBuffer(imageBuffer)) {
+      return await encodeAvifToWebPViaIcodec(imageBuffer, options)
+    }
     throw error
   }
+}
+
+function isAvifBuffer(buffer: Buffer): boolean {
+  // ISOBMFF 'ftyp' box at offset 4; AVIF advertises 'avif'/'avis' as a brand.
+  if (buffer.length < 12 || buffer.toString('ascii', 4, 8) !== 'ftyp') {
+    return false
+  }
+  const boxSize = Math.min(buffer.readUInt32BE(0) || 0, buffer.length)
+  const brandsEnd = boxSize > 12 ? boxSize : Math.min(buffer.length, 32)
+  const brands = buffer.toString('ascii', 8, brandsEnd)
+  return brands.includes('avif') || brands.includes('avis')
+}
+
+async function encodeAvifToWebPViaIcodec(
+  imageBuffer: Buffer,
+  options: { quality?: number }
+): Promise<Buffer> {
+  const { avif } = await import('icodec/node')
+  await avif.loadDecoder()
+  // icodec types decode() as the DOM ImageData; at runtime it returns an
+  // ImageDataLike carrying `depth` (and, for >8-bit, 2 bytes/channel data).
+  const image = avif.decode(imageBuffer) as unknown as {
+    width: number
+    height: number
+    depth?: number
+    data: Uint8Array | Uint8ClampedArray
+  }
+  const { width, height, data } = image
+  const depth = image.depth ?? 8
+  const pixels = width * height * 4
+
+  // Sharp raw input expects 8-bit RGBA. 10/12-bit AVIF decodes to 2 bytes per
+  // channel (little-endian), so scale each sample down to 8-bit.
+  let rgba: Buffer
+  if (depth === 8) {
+    rgba = Buffer.from(data)
+  } else {
+    const view = new Uint16Array(data.buffer, data.byteOffset, pixels)
+    const out = Buffer.allocUnsafe(pixels)
+    const max = (1 << depth) - 1
+    for (let i = 0; i < pixels; i++) {
+      out[i] = Math.round((view[i] / max) * 255)
+    }
+    rgba = out
+  }
+
+  return await sharp(rgba, {
+    raw: { width, height, channels: 4 }
+  })
+    .webp({ quality: options.quality ?? 100 })
+    .toBuffer()
 }
 
 export async function convertToPng(input: Buffer | string): Promise<Buffer> {
