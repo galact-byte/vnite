@@ -1,13 +1,19 @@
-## v4.12.3
+## v4.13.0
 
-> Personal fork of [ximu3/vnite](https://github.com/ximu3/vnite) — original project created by ximu3.
+### ✨ 新增
 
-### 🛠️ Fixes
-
-- **Region-locked Steam games can now be identified by Steam App ID.** Previously, region-restricted titles could be found by name search but returned an "invalid ID" error when added or scraped by their Steam App ID. Metadata, screenshots, header images, and existence checks now probe multiple store regions (matching the behaviour of name search), so these games resolve correctly. (fixes [ximu3/vnite#681](https://github.com/ximu3/vnite/issues/681))
-
----
+- **使用数据源添加游戏时也能选择游戏路径。** 以前只有在“无数据源”方式下才能选择本地游戏路径，现在按名称搜索 / 按 ID 识别添加时也能一并指定路径。
+- **应用内更新指向本项目的发布。** 检测到新版本时可直接在软件内下载并更新。
+- 新增自定义启动器预设。
+- 游戏记录支持导出 HTML 报告与 JSON 游玩时长报告。
+- 新增沉浸式图片查看器（替代原有图片弹窗）。
+- 回忆（memory）板块增强：置顶、完整内容视图、每游戏视图偏好、可配置悬停操作等。
+- 游戏退出后是否恢复窗口可配置；设置项支持直达跳转。
+- 存储大小对话框改进（优先显示 GiB、支持清除）。
 
 ### 🛠️ 修复
 
-- **区域锁 Steam 游戏现在可以按 Steam App ID 识别。** 此前区域限制的游戏能按名称搜索到，但按 Steam App ID 添加或刮削时会报“无效 ID”。现在元数据、截图、头图与存在性检查都会尝试多个商店区服（与按名搜索行为一致），这类游戏可正确识别。（修复 [ximu3/vnite#681](https://github.com/ximu3/vnite/issues/681)）
+- **游戏简介中的 10/12-bit AVIF 图片现在能正常缓存到本地。** 此前这类图片解码失败会退回为外链，现在会通过兜底解码器正确写入本地缓存。
+- **紧凑视图标题区添加深色渐变，避免过亮的 hero 背景导致文字看不清。**
+- 修正相关游戏推荐参数与字符串相似度实现。
+- 修复 Windows 下游戏 URL 启动、计时器图表反应与日期显示等多个问题。
