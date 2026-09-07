@@ -47,7 +47,14 @@ export function HeaderCompact({
 
   return (
     <div className={cn('flex-col flex gap-5 px-7 py-5 pl-6 pt-6 relative mb-5', className)}>
-      <div className="flex flex-row gap-1 h-[220px] justify-between items-start">
+      {/* Left-to-right dark gradient to keep text legible over bright hero backgrounds (#552) */}
+      <div
+        className={cn(
+          'absolute inset-0 pointer-events-none z-0',
+          'bg-gradient-to-r from-black/60 via-black/30 to-transparent'
+        )}
+      />
+      <div className="relative z-10 flex flex-row gap-1 h-[220px] justify-between items-start">
         {/* Game cover image */}
         {showCover && (
           <ContextMenu>
