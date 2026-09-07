@@ -25,6 +25,13 @@ jobs:
           node-version: 20
           cache: 'pnpm'
 
+      # node-gyp (via electron-builder install-app-deps) needs distutils, which was
+      # removed from Python 3.12 stdlib. Pin 3.11 so native rebuilds work on CI.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
