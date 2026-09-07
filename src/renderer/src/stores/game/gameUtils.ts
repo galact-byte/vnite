@@ -20,6 +20,24 @@ import { useGameRegistry } from './gameRegistry'
 import { getGameStore } from './gameStoreFactory'
 import { useGameCollectionStore } from './useGameCollectionStore'
 
+export interface GameRecordCalculationSource {
+  timers: gameDoc['record']['timers']
+  dailyPlayTimes: gameDoc['record']['dailyPlayTimes']
+}
+
+function resolveGameRecordCalculationSource(
+  gameId: string,
+  source?: GameRecordCalculationSource
+): GameRecordCalculationSource {
+  if (source) return source
+
+  const store = getGameStore(gameId)
+  return {
+    timers: store.getState().getValue('record.timers') || [],
+    dailyPlayTimes: store.getState().getValue('record.dailyPlayTimes') || []
+  }
+}
+
 // Search Functions
 export function searchGames(query: string, gameIds?: readonly string[]): string[] {
   if (!query.trim()) return gameIds ? [...gameIds] : useGameRegistry.getState().gameIds
@@ -445,10 +463,7 @@ export function filterGames(
   }
 }
 
-function computeGameSimilarity(
-  a: gameDoc,
-  b: gameDoc
-): { titleSim: number; devSim: number; totalSim: number } {
+function computeGameSimilarity(a: gameDoc, b: gameDoc): { titleSim: number; devSim: number } {
   // ---- name / originalName: Jaro-Winkler Similarity ----
   const hasAName = !!a.metadata.name
   const hasAOri = !!a.metadata.originalName
@@ -461,8 +476,7 @@ function computeGameSimilarity(
   if (hasAName && hasBName) {
     titleScore += jaroWinkler(a.metadata.name.toLowerCase(), b.metadata.name.toLowerCase())
     titleWeightSum += 1
-  }
-  if (hasAOri && hasBOri) {
+  } else if (hasAOri && hasBOri) {
     titleScore += jaroWinkler(
       a.metadata.originalName.toLowerCase(),
       b.metadata.originalName.toLowerCase()
@@ -487,10 +501,7 @@ function computeGameSimilarity(
     if (union !== 0) devSim = intersection / union
   }
 
-  const nameWeight = 0.7
-  const devWeight = 0.3
-
-  return { titleSim, devSim, totalSim: titleSim * nameWeight + devSim * devWeight }
+  return { titleSim, devSim }
 }
 
 export function getSimilarGames(
@@ -518,6 +529,10 @@ export function getSimilarGames(
   const targetGame = getGameStore(targetId).getState().data
   if (!checkGameDocValid(targetGame)) return results
 
+  const weightedScore = (dev: number, title: number): number => 0.4 * dev + 0.6 * title
+  const devThreshold = 0.5
+  const titleThreshold = 0.4
+
   for (const id of gameIds) {
     if (id === targetId) continue
 
@@ -527,10 +542,15 @@ export function getSimilarGames(
 
     try {
       const score = computeGameSimilarity(targetGame, game)
-      if (score.totalSim >= 0.3) {
-        // At minimum, games sharing the same developers should be accepted.
+      const { devSim, titleSim } = score
+      const totalScore = weightedScore(devSim, titleSim)
+      if (devSim >= devThreshold || titleSim >= titleThreshold) {
         const displayName = (game.metadata.name || game.metadata.originalName) ?? ''
-        results.push({ gameId: id, gameName: displayName, score: score.totalSim })
+        results.push({
+          gameId: id,
+          gameName: displayName,
+          score: totalScore
+        })
       }
     } catch (error) {
       console.error(`Error computing similarity for ${targetId} and ${id}:`, error)
@@ -709,12 +729,14 @@ export function getGamePlayTime(gameId: string): number {
 export function getGamePlayTimeByDateRange(
   gameId: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  source?: GameRecordCalculationSource
 ): { [date: string]: number } {
   try {
-    const store = getGameStore(gameId)
-    const timers = store.getState().getValue('record.timers') || []
-    const recordedDailyPlayTimes = store.getState().getValue('record.dailyPlayTimes') || []
+    const { timers, dailyPlayTimes: recordedDailyPlayTimes } = resolveGameRecordCalculationSource(
+      gameId,
+      source
+    )
     if (timers.length === 0 && recordedDailyPlayTimes.length === 0) return {}
 
     const dayBoundaryHour = getConfiguredDayBoundaryHour()
@@ -776,13 +798,17 @@ export function getGamePlayTimeByDateRange(
 }
 
 // Get the dates the game has been played (stored in Set)
-export function getGamePlayedDates(gameId: string): Set<string> {
+export function getGamePlayedDates(
+  gameId: string,
+  source?: GameRecordCalculationSource
+): Set<string> {
   const playDays = new Set<string>()
 
   try {
-    const store = getGameStore(gameId)
-    const timers = store.getState().getValue('record.timers')
-    const recordedDailyPlayTimes = store.getState().getValue('record.dailyPlayTimes')
+    const { timers, dailyPlayTimes: recordedDailyPlayTimes } = resolveGameRecordCalculationSource(
+      gameId,
+      source
+    )
     const dayBoundaryHour = getConfiguredDayBoundaryHour()
     let abnormalTimerCount = 0
 
@@ -790,7 +816,7 @@ export function getGamePlayedDates(gameId: string): Set<string> {
       playDays.add(item.date)
     }
 
-    for (const timer of timers || []) {
+    for (const timer of timers) {
       const startMs = new Date(timer.start).getTime()
       const endMs = new Date(timer.end).getTime()
       if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
@@ -819,16 +845,20 @@ export function getGamePlayedDates(gameId: string): Set<string> {
 }
 
 // Get the number of days the game has been played
-export function getGamePlayDays(gameId: string): number {
-  return getGamePlayedDates(gameId).size
+export function getGamePlayDays(gameId: string, source?: GameRecordCalculationSource): number {
+  return getGamePlayedDates(gameId, source).size
 }
 
 // Get the date of the game's maximum play time
-export function getGameMaxPlayTimeDay(gameId: string): MaxPlayTimeDay | null {
+export function getGameMaxPlayTimeDay(
+  gameId: string,
+  source?: GameRecordCalculationSource
+): MaxPlayTimeDay | null {
   try {
-    const store = getGameStore(gameId)
-    const timers = store.getState().getValue('record.timers') || []
-    const recordedDailyPlayTimes = store.getState().getValue('record.dailyPlayTimes') || []
+    const { timers, dailyPlayTimes: recordedDailyPlayTimes } = resolveGameRecordCalculationSource(
+      gameId,
+      source
+    )
     const dayBoundaryHour = getConfiguredDayBoundaryHour()
     if (timers.length === 0 && recordedDailyPlayTimes.length === 0) return null
 
@@ -912,11 +942,15 @@ export function getGameRecord(gameId: string): gameDoc['record'] {
 }
 
 // Get game start and end dates
-export function getGameStartAndEndDate(gameId: string): { start: string; end: string } {
+export function getGameStartAndEndDate(
+  gameId: string,
+  source?: GameRecordCalculationSource
+): { start: string; end: string } {
   try {
-    const store = getGameStore(gameId)
-    const timers = store.getState().getValue('record.timers') || []
-    const recordedDailyPlayTimes = store.getState().getValue('record.dailyPlayTimes') || []
+    const { timers, dailyPlayTimes: recordedDailyPlayTimes } = resolveGameRecordCalculationSource(
+      gameId,
+      source
+    )
     const dayBoundaryHour = getConfiguredDayBoundaryHour()
     const dateKeys: string[] = []
 
@@ -969,9 +1003,9 @@ export function getSortedGameIds(order: 'asc' | 'desc' = 'asc'): string[] {
 }
 
 // Get annual play days
-export function getPlayedDaysYearly(): { [date: string]: number } {
+export function getPlayedDaysYearly(gameIds?: readonly string[]): { [date: string]: number } {
   try {
-    const { gameIds } = useGameRegistry.getState()
+    const sourceGameIds = gameIds ?? useGameRegistry.getState().gameIds
     const dayBoundaryHour = getConfiguredDayBoundaryHour()
 
     const oneYearAgo = new Date()
@@ -988,7 +1022,7 @@ export function getPlayedDaysYearly(): { [date: string]: number } {
     }
     let abnormalTimerCount = 0
 
-    for (const gameId of gameIds) {
+    for (const gameId of sourceGameIds) {
       const store = getGameStore(gameId)
       const timers = store.getState().getValue('record.timers') || []
       const recordedDailyPlayTimes = store.getState().getValue('record.dailyPlayTimes') || []
@@ -1042,11 +1076,11 @@ export function getPlayedDaysYearly(): { [date: string]: number } {
 }
 
 // Get Total Playtime
-export function getTotalplayTime(): number {
+export function getTotalplayTime(gameIds?: readonly string[]): number {
   try {
-    const { gameIds } = useGameRegistry.getState()
+    const sourceGameIds = gameIds ?? useGameRegistry.getState().gameIds
 
-    return gameIds.reduce((total, gameId) => {
+    return sourceGameIds.reduce((total, gameId) => {
       return total + getGamePlayTime(gameId)
     }, 0)
   } catch (error) {
@@ -1056,11 +1090,11 @@ export function getTotalplayTime(): number {
 }
 
 // Get Total Play
-export function getTotalPlayedTimes(): number {
+export function getTotalPlayedTimes(gameIds?: readonly string[]): number {
   try {
-    const { gameIds } = useGameRegistry.getState()
+    const sourceGameIds = gameIds ?? useGameRegistry.getState().gameIds
 
-    return gameIds.reduce((total, gameId) => {
+    return sourceGameIds.reduce((total, gameId) => {
       const store = getGameStore(gameId)
       const timers = store.getState().getValue('record.timers')
       return total + (timers?.length || 0)
@@ -1072,12 +1106,12 @@ export function getTotalPlayedTimes(): number {
 }
 
 // Get Total Days of Play
-export function getTotalPlayedDays(): number {
+export function getTotalPlayedDays(gameIds?: readonly string[]): number {
   try {
-    const { gameIds } = useGameRegistry.getState()
+    const sourceGameIds = gameIds ?? useGameRegistry.getState().gameIds
     const allDates = new Set<string>()
 
-    for (const gameId of gameIds) {
+    for (const gameId of sourceGameIds) {
       for (const date of getGamePlayedDates(gameId)) {
         allDates.add(date)
       }

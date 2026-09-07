@@ -218,11 +218,11 @@
         "tags": "標籤",
         "basicInfo": "基本資訊",
         "extraInfo": "附加資訊",
-        "relatedGames": "相關遊戲",
+        "recommendedGames": "推薦遊戲",
         "relatedSites": "相關網站"
       },
-      "relatedGames": {
-        "empty": "暫無相關遊戲"
+      "recommendedGames": {
+        "empty": "暫無推薦遊戲"
       },
       "description": {
         "empty": "暫無簡介",
@@ -348,20 +348,27 @@
         "adjustCover": "調整封面",
         "addText": "添加文字",
         "editText": "修改文字",
+        "pin": "置頂",
+        "unpin": "取消置頂",
         "delete": "刪除",
         "openScreenshotDir": "打開截圖目錄"
       },
       "views": {
         "grid": "卡片",
+        "full": "圖文",
         "masonry": "照片牆",
         "list": "列表"
+      },
+      "settings": {
+        "independentViewMode": "為此遊戲使用獨立回憶視圖"
       },
       "pagination": {
         "first": "首頁",
         "previous": "上一頁",
         "next": "下一頁",
         "last": "末頁",
-        "pageStatus": "{{current}} / {{total}}"
+        "pageStatus": "{{current}} / {{total}}",
+        "unpaginated": "不分頁"
       },
       "list": {
         "untitled": "未命名筆記",
@@ -382,6 +389,10 @@
         "deleting": "正在刪除…",
         "deleteSuccess": "刪除成功",
         "deleteError": "刪除失敗: {{error}}",
+        "pinSuccess": "已置頂回憶",
+        "pinError": "置頂回憶失敗: {{error}}",
+        "unpinSuccess": "已取消置頂回憶",
+        "unpinError": "取消置頂回憶失敗: {{error}}",
         "selectFileError": "選擇文件失敗: {{error}}",
         "insertImageError": "插入圖片失敗: {{error}}",
         "imageNotFound": "未找到目前圖片",
@@ -445,6 +456,7 @@
         "autoTitle": "自動計算",
         "autoDescription": "根據目前的遊戲根目錄計算大小。",
         "autoUnavailable": "由於未設定遊戲根目錄，因此無法使用自動計算。",
+        "clear": "清空",
         "manualTitle": "手動輸入",
         "manualDescription": "當無法自動計算，或本機檔案已被移除時，可手動輸入遊戲大小。",
         "manualInputPlaceholder": "輸入大小"
@@ -457,6 +469,8 @@
         "calculatingStorageSize": "正在計算遊戲大小...",
         "storageSizeCalculated": "遊戲大小已計算：{{size}}",
         "storageSizeError": "計算遊戲大小失敗",
+        "storageSizeCleared": "遊戲大小已清空",
+        "storageSizeClearError": "清空遊戲大小失敗",
         "storageSizeSaved": "已儲存遊戲大小：{{size}}",
         "storageSizeSaveError": "儲存遊戲大小失敗",
         "storageSizeNegative": "遊戲大小不能為負數",
@@ -590,8 +604,6 @@
           "importFromUrl": "從連結匯入",
           "searchImage": "搜尋圖片",
           "viewLargeImage": "查看原圖",
-          "copyToClipboard": "複製到剪貼簿",
-          "saveAs": "另存為",
           "cropImage": "裁剪圖片",
           "upscaleImage": "超分背景圖",
           "deleteImage": "刪除圖片"
@@ -686,7 +698,12 @@
           "le": "LE轉區啟動",
           "steam": "Steam啟動",
           "vba": "VBA啟動",
+          "noResults": "未找到預設",
+          "manage": "管理預設",
           "steamIdRequired": "請輸入Steam ID",
+          "steamIdTitle": "補充 Steam ID",
+          "steamIdDescription": "Steam ID 將儲存到遊戲中繼資料，然後重新套用所選預設。",
+          "invalidSteamId": "Steam ID 必須為數字",
           "notifications": {
             "configuring": "正在配置預設…",
             "success": "預設配置成功"

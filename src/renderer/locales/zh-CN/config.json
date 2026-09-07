@@ -18,6 +18,8 @@
     "minimizeToTray": "最小化到托盘",
     "hideWindowAfterGameStart": "启动游戏后最小化到托盘",
     "hideWindowAfterGameStartDescription": "启动游戏后自动隐藏主窗口",
+    "showWindowAfterGameExit": "游戏退出后显示主窗口",
+    "showWindowAfterGameExitDescription": "检测到游戏退出后，自动显示 Vnite 并将其切换到前台",
     "timerTitle": "游戏计时器",
     "foregroundTimer": {
       "title": "前台计时",
@@ -173,7 +175,13 @@
       "gridColumnWidth": "卡片列宽",
       "gridColumnWidthDescription": "根据回忆区域可用宽度和该像素值自动计算卡片模式列数",
       "masonryColumnWidth": "照片墙列宽",
-      "masonryColumnWidthDescription": "根据回忆区域可用宽度和该像素值自动计算照片墙列数"
+      "masonryColumnWidthDescription": "根据回忆区域可用宽度和该像素值自动计算照片墙列数",
+      "fullColumnWidth": "图文列宽",
+      "fullColumnWidthDescription": "根据回忆区域可用宽度和该像素值自动计算图文模式列数",
+      "showAddCoverHoverButton": "显示添加封面悬浮按钮",
+      "showAddCoverHoverButtonDescription": "当回忆缺少封面时，在卡片和图文视图中显示添加封面的快捷按钮",
+      "showAddNoteHoverButton": "显示添加笔记悬浮按钮",
+      "showAddNoteHoverButtonDescription": "当回忆缺少笔记时，在卡片和图文视图中显示添加笔记的快捷按钮"
     },
     "sidebar": {
       "title": "侧边栏",
@@ -282,6 +290,41 @@
         "iconPathRequired": "请先填写可执行文件路径",
         "extractIconFailed": "提取程序图标失败：{{message}}",
         "removeToolFailed": "删除工具失败：{{message}}"
+      }
+    },
+    "launcherPresets": {
+      "title": "启动与追踪预设",
+      "variables": "可用变量（点击复制）",
+      "newPreset": "新预设",
+      "unnamedPreset": "未命名预设",
+      "empty": "暂无自定义预设",
+      "selectPreset": "选择一个预设进行查看或编辑",
+      "duplicate": "复制",
+      "launchMode": "启动模式",
+      "mode": {
+        "file": "文件",
+        "url": "链接",
+        "script": "脚本"
+      },
+      "filePath": "文件路径",
+      "url": "链接地址",
+      "browserPath": "浏览器路径（可选）",
+      "command": "脚本内容",
+      "workingDirectory": "工作目录",
+      "monitorMode": "追踪模式",
+      "monitor": {
+        "folder": "目录",
+        "file": "文件",
+        "process": "进程"
+      },
+      "monitorPath": "追踪路径",
+      "processName": "进程名称",
+      "validation": {
+        "name-required": "预设名称不能为空",
+        "duplicate-name": "自定义预设名称不能重复"
+      },
+      "notifications": {
+        "variableCopied": "变量已复制"
       }
     }
   },

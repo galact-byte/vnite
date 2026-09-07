@@ -85,7 +85,7 @@
       "playTime": "플레이 시간: {{time, gameTime}}"
     },
     "chart": {
-      "weeklyPlayTime": "주간 플레이 시간",
+      "dailyPlayTime": "일별 플레이 시간",
       "calendarTitle": "월간 게임 달력",
       "weekFormat": "{{week}}번째 주",
       "weekDateRange": "{{week}} ({{startDay}}일~{{endDay}}일)"
@@ -191,5 +191,21 @@
       "lastRun": "마지막 플레이: {{date, niceDate}}",
       "ratingLabel": "평가 점수"
     }
+  },
+  "exportReport": {
+    "preset": {
+      "label": "",
+      "groups": { "poster": "Poster", "json": "JSON" },
+      "posterScoreReport": "",
+      "gamePlayTime": ""
+    },
+    "action": { "export": "", "reset": "" },
+    "message": {
+      "loading": "",
+      "success": "",
+      "error": ""
+    },
+    "outputPath": "",
+    "settings": { "empty": "" }
   }
 }

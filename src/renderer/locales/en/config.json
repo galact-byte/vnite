@@ -18,6 +18,8 @@
     "minimizeToTray": "Minimize to Tray",
     "hideWindowAfterGameStart": "Minimize to tray after game launch",
     "hideWindowAfterGameStartDescription": "Automatically hide main window after launching a game",
+    "showWindowAfterGameExit": "Show main window after game exit",
+    "showWindowAfterGameExitDescription": "Automatically show and focus the Vnite main window after a game exits",
     "timerTitle": "Game Timer",
     "foregroundTimer": {
       "title": "Foreground Timer",
@@ -173,7 +175,13 @@
       "gridColumnWidth": "Card Column Width",
       "gridColumnWidthDescription": "Automatically calculate the card view column count from the available width and this pixel value",
       "masonryColumnWidth": "Gallery Column Width",
-      "masonryColumnWidthDescription": "Automatically calculate the gallery column count from the available width and this pixel value"
+      "masonryColumnWidthDescription": "Automatically calculate the gallery column count from the available width and this pixel value",
+      "fullColumnWidth": "Text & Image Column Width",
+      "fullColumnWidthDescription": "Automatically calculate the text and image view column count from the available width and this pixel value",
+      "showAddCoverHoverButton": "Show Add Cover Hover Button",
+      "showAddCoverHoverButtonDescription": "Show an add cover shortcut when a memory is missing its cover in card and text and image views",
+      "showAddNoteHoverButton": "Show Add Note Hover Button",
+      "showAddNoteHoverButtonDescription": "Show an add note shortcut when a memory is missing its note in card and text and image views"
     },
     "sidebar": {
       "title": "Sidebar",
@@ -282,6 +290,41 @@
         "iconPathRequired": "Enter an executable path first",
         "extractIconFailed": "Failed to extract the program icon: {{message}}",
         "removeToolFailed": "Failed to remove the tool: {{message}}"
+      }
+    },
+    "launcherPresets": {
+      "title": "Launcher & Tracker Presets",
+      "variables": "Available variables (click to copy)",
+      "newPreset": "New Preset",
+      "unnamedPreset": "Unnamed Preset",
+      "empty": "No custom presets",
+      "selectPreset": "Select a preset to view or edit",
+      "duplicate": "Duplicate",
+      "launchMode": "Launch Mode",
+      "mode": {
+        "file": "File",
+        "url": "URL",
+        "script": "Script"
+      },
+      "filePath": "File Path",
+      "url": "URL",
+      "browserPath": "Browser Path (Optional)",
+      "command": "Script Commands",
+      "workingDirectory": "Working Directory",
+      "monitorMode": "Tracking Mode",
+      "monitor": {
+        "folder": "Folder",
+        "file": "File",
+        "process": "Process"
+      },
+      "monitorPath": "Tracking Path",
+      "processName": "Process Name",
+      "validation": {
+        "name-required": "Preset name is required",
+        "duplicate-name": "Custom preset names must be unique"
+      },
+      "notifications": {
+        "variableCopied": "Variable copied"
       }
     }
   },
