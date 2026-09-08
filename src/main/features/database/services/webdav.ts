@@ -464,6 +464,15 @@ export async function syncViaWebDAV(
   const onProgress = options.silent ? undefined : createProgressReporter()
   const attemptAt = new Date().toISOString()
 
+  // Reflect real WebDAV sync activity in the titlebar indicator. `silent` only
+  // suppresses toasts/progress, not the status the icon reads, so periodic and
+  // post-exit auto-syncs still update it.
+  ipcManager.send('db:sync-status', {
+    status: 'syncing',
+    message: 'WebDAV syncing',
+    timestamp: attemptAt
+  })
+
   let result: SyncResult
 
   try {
@@ -491,9 +500,15 @@ export async function syncViaWebDAV(
     // A concurrent sync holds the mutex — nothing actually ran, so leave
     // status and conflict list untouched.
     if (error instanceof Error && error.message === 'Sync already in progress') {
+      // A concurrent sync owns the status; don't overwrite the titlebar.
       throw error
     }
     await writeWebdavStatus(attemptAt, null, error)
+    ipcManager.send('db:sync-status', {
+      status: 'error',
+      message: error instanceof Error ? error.message : 'WebDAV sync error',
+      timestamp: new Date().toISOString()
+    })
     throw error
   }
 
@@ -510,6 +525,16 @@ export async function syncViaWebDAV(
     }
   }
   await writeWebdavStatus(attemptAt, result)
+
+  const conflictCount = result.conflicts?.length ?? 0
+  ipcManager.send('db:sync-status', {
+    status: 'success',
+    message:
+      conflictCount > 0
+        ? `WebDAV sync completed with ${conflictCount} conflict(s)`
+        : 'WebDAV sync success',
+    timestamp: new Date().toISOString()
+  })
 
   return result
 }
