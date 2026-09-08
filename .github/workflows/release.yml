@@ -12,6 +12,13 @@ jobs:
     permissions:
       contents: write
 
+    # Pull Electron and electron-builder binaries from a stable mirror instead of
+    # GitHub's release-asset CDN, which intermittently resets the connection
+    # mid-download and fails packaging.
+    env:
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
