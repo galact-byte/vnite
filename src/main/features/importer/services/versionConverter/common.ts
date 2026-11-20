@@ -1,10 +1,10 @@
 import {
   DEFAULT_CONFIG_LOCAL_VALUES,
   DEFAULT_CONFIG_VALUES,
-  GameMediaType,
   gameCollectionDoc,
   gameDoc,
   gameLocalDoc,
+  GameMediaType,
   STORAGE_SIZE_NOT_CALCULATED
 } from '@appTypes/models'
 import { app } from 'electron'
@@ -282,6 +282,7 @@ async function convertGame(gameId: string, gamePath: string): Promise<void> {
         addDate: record.addDate || '',
         lastRunDate: record.lastRunDate || '',
         score: record.score || -1,
+        scoreSource: null,
         playTime: record.playingTime || 0,
         playStatus: record.playStatus || 'unplayed',
         hideFromRecentGames: false,
@@ -292,6 +293,7 @@ async function convertGame(gameId: string, gamePath: string): Promise<void> {
       save: {
         saveList: {},
         maxBackups: 7,
+        autoBackupSave: true,
         autoRestoreSave: false
       },
       memory: {
@@ -316,7 +318,14 @@ async function convertGame(gameId: string, gamePath: string): Promise<void> {
     // Processing of archived data
     if (save) {
       Object.keys(save).forEach((saveId) => {
-        if (!gameDoc.save) gameDoc.save = { saveList: {}, maxBackups: 7, autoRestoreSave: false }
+        if (!gameDoc.save) {
+          gameDoc.save = {
+            saveList: {},
+            maxBackups: 7,
+            autoBackupSave: true,
+            autoRestoreSave: false
+          }
+        }
         gameDoc.save.saveList[saveId] = {
           _id: save[saveId].id,
           date: save[saveId].date,
@@ -560,9 +569,9 @@ async function convertConfig(basePath: string): Promise<void> {
       quitToTray: v2Config.general.quitToTray,
       language: '',
       hideWindowAfterGameStart: true,
-      // 旧版本没有该开关，迁移时保持原有的退出后唤起行为，避免升级改变用户体验。
       showWindowAfterGameExit: true,
       enableForegroundTimer: true,
+      enhancedProcessMonitoring: false,
       foregroundWaitTime: 10,
       ignoreShortInterruptions: 0,
       ignoreShortSessions: 0
@@ -581,10 +590,13 @@ async function convertConfig(basePath: string): Promise<void> {
 
     // Converting game-related configurations
     await ConfigDBManager.setConfigValue('game', {
+      sortNameFallback: DEFAULT_CONFIG_VALUES.game.sortNameFallback,
+      playStatusSortOrder: DEFAULT_CONFIG_VALUES.game.playStatusSortOrder,
       scraper: {
         common: {
           defaultDataSource: mapDataSourceName(v2Config.scraper.defaultDataSource),
           defaultMediaDataSource: 'google',
+          fetchScoreOnAdd: false,
           cacheDescriptionImages: false
         },
         vndb: {
@@ -597,13 +609,15 @@ async function convertConfig(basePath: string): Promise<void> {
       showcase: {
         sort: {
           by: mapSortField(v2Config.others.showcase.sort.by),
-          order: v2Config.others.showcase.sort.order
+          order: v2Config.others.showcase.sort.order,
+          secondary: null
         }
       },
       gameList: {
         sort: {
           by: mapSortField(v2Config.others.gameList.sort.by),
-          order: v2Config.others.gameList.sort.order
+          order: v2Config.others.gameList.sort.order,
+          secondary: null
         },
         groupSortSummary: DEFAULT_CONFIG_VALUES.game.gameList.groupSortSummary,
         overrideCollectionSort: false,

@@ -17,7 +17,9 @@ import { ipcManager, setupIPC } from './core/ipc'
 import { nativeCleanup, setupNativeModule } from './core/native'
 import { AuthManager, handleAuthCallback } from './features/account'
 import { GameScannerManager } from './features/adder'
+import { setupProcessMonitor, stopProcessMonitor } from './features/monitor'
 import { setupScraper } from './features/scraper'
+import { primeGoogleImageSearchSession } from './features/scraper/providers/google/common'
 import {
   checkPortableMode,
   initI18n,
@@ -36,7 +38,6 @@ import {
   checkIfDirectoryNeedsAdminRights,
   cleanupPowerShell,
   parseGameIdFromUrl,
-  primeGoogleImageSearchSession,
   restartAppAsAdmin
 } from './utils'
 
@@ -341,6 +342,13 @@ app.whenReady().then(async () => {
   // Setup native module
   await setupNativeModule()
 
+  // Setup the independent collector and TypeScript monitoring business.
+  try {
+    await setupProcessMonitor()
+  } catch (error) {
+    log.error('[Monitor] Failed to initialize monitoring', error)
+  }
+
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
@@ -379,6 +387,7 @@ app.on('before-quit', async (event) => {
 
   // Clean up PowerShell instance
   cleanupPowerShell()
+  await stopProcessMonitor()
   await nativeCleanup()
 
   // Clean up tray
@@ -395,12 +404,14 @@ process.on('exit', () => {
 // Handle unexpected exits
 process.on('SIGINT', async () => {
   cleanupPowerShell()
+  await stopProcessMonitor()
   await nativeCleanup()
   app.quit()
 })
 
 process.on('SIGTERM', async () => {
   cleanupPowerShell()
+  await stopProcessMonitor()
   await nativeCleanup()
   app.quit()
 })

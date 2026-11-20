@@ -14,7 +14,7 @@ interface SearchDescriptionDialogProps {
   isOpen: boolean
   onClose: () => void
   gameTitle: string
-  onSelect: (description: string) => void
+  onSelect: (description: string) => Promise<void>
 }
 
 export function SearchDescriptionDialog({
@@ -30,6 +30,7 @@ export function SearchDescriptionDialog({
   >([])
   const [selectedDescription, setSelectedDescription] = useState<string>('')
   const [isLoading, setIsLoading] = useState(false)
+  const [isApplying, setIsApplying] = useState(false)
 
   useEffect(() => {
     setSearchTitle(gameTitle)
@@ -37,11 +38,7 @@ export function SearchDescriptionDialog({
 
   useEffect(() => {
     if (isOpen) {
-      toast.promise(handleSearch(), {
-        loading: t('detail.overview.description.search.loading'),
-        success: t('detail.overview.description.search.success'),
-        error: (err) => t('detail.overview.description.search.error', { message: err.message })
-      })
+      void handleSearch()
     }
     setDescriptionList([])
   }, [isOpen, t])
@@ -49,6 +46,9 @@ export function SearchDescriptionDialog({
   async function handleSearch(): Promise<void> {
     if (isLoading) return
     setIsLoading(true)
+    setDescriptionList([])
+    setSelectedDescription('')
+    const toastId = toast.loading(t('detail.overview.description.search.loading'))
 
     try {
       const result = await ipcManager.invoke('scraper:get-game-description-list', {
@@ -57,26 +57,44 @@ export function SearchDescriptionDialog({
       })
 
       if (result.length === 0) {
-        toast.error(t('detail.overview.description.search.notFound'))
+        toast.error(t('detail.overview.description.search.notFound'), { id: toastId })
         return
       }
 
       setDescriptionList(result)
       setSelectedDescription(result[0].description)
+      toast.success(t('detail.overview.description.search.success'), { id: toastId })
     } catch (error) {
-      toast.error(t('detail.overview.description.search.searchError', { error }))
+      toast.error(
+        t('detail.overview.description.search.error', {
+          message: error instanceof Error ? error.message : ''
+        }),
+        { id: toastId }
+      )
     } finally {
       setIsLoading(false)
     }
   }
 
-  function handleConfirm(): void {
+  async function handleConfirm(): Promise<void> {
     if (!selectedDescription) {
       toast.error(t('detail.overview.description.search.selectRequired'))
       return
     }
-    onSelect(selectedDescription)
-    handleClose()
+    if (isApplying) return
+
+    setIsApplying(true)
+    const applyPromise = onSelect(selectedDescription)
+    toast.promise(applyPromise, {
+      loading: t('detail.overview.description.search.applyLoading'),
+      success: t('detail.overview.description.search.applySuccess'),
+      error: (error) =>
+        t('detail.overview.description.search.applyError', {
+          message: error instanceof Error ? error.message : String(error)
+        })
+    })
+    await applyPromise.then(handleClose, () => undefined)
+    setIsApplying(false)
   }
 
   function handleClose(): void {
@@ -86,7 +104,12 @@ export function SearchDescriptionDialog({
   }
 
   return (
-    <Dialog open={isOpen} onOpenChange={handleClose}>
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isApplying) handleClose()
+      }}
+    >
       <DialogContent
         showCloseButton={false}
         className={cn('w-[50vw] h-[80vh] max-w-none flex flex-col gap-3')}
@@ -111,7 +134,7 @@ export function SearchDescriptionDialog({
                       <DescriptionHtmlContent
                         value={item.description}
                         className={cn(
-                          'prose prose-sm dark:prose-invert max-w-none',
+                          'prose prose-sm text-sm dark:prose-invert max-w-none',
                           'prose-headings:my-1', // Reduce heading margins for better spacing
                           'prose-a:text-primary', // Link Color
                           'prose-a:no-underline hover:prose-a:underline', // underline effect
@@ -141,24 +164,22 @@ export function SearchDescriptionDialog({
               onChange={(e) => setSearchTitle(e.target.value)}
               placeholder={t('detail.overview.search.placeholder')}
               className={cn('flex-grow')}
+              disabled={isApplying}
             />
             <Button
               onClick={() => {
-                toast.promise(handleSearch(), {
-                  loading: t('detail.overview.description.search.loading'),
-                  success: t('detail.overview.description.search.success'),
-                  error: (err) =>
-                    t('detail.overview.description.search.error', { message: err.message })
-                })
+                void handleSearch()
               }}
               size={'icon'}
               className={cn('shrink-0')}
-              disabled={isLoading}
+              disabled={isLoading || isApplying}
             >
               <span className={cn('icon-[mdi--magnify] w-[20px] h-[20px]')}></span>
             </Button>
-            <Button onClick={handleConfirm}>{t('utils:common.confirm')}</Button>
-            <Button variant="outline" onClick={handleClose}>
+            <Button onClick={handleConfirm} disabled={isLoading || isApplying}>
+              {t('utils:common.confirm')}
+            </Button>
+            <Button variant="outline" onClick={handleClose} disabled={isApplying}>
               {t('utils:common.cancel')}
             </Button>
           </div>

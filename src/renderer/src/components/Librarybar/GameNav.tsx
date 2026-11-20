@@ -1,7 +1,7 @@
-import { NSFWBlurLevel } from '@appTypes/models'
+import { NSFWBlurLevel, type configDocs } from '@appTypes/models'
 import { useLocation, useNavigate } from '@tanstack/react-router'
 import { Nav } from '@ui/nav'
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useContext, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AddCollectionDialog } from '~/components/dialog/AddCollectionDialog'
 import { PlayTimeEditorDialog } from '~/components/Game/Config/ManageMenu/PlayTimeEditorDialog'
@@ -18,7 +18,20 @@ import { InformationDialog } from '../Game/Overview/Information/InformationDialo
 import { PLAY_STATUS_COLORS, PLAY_STATUS_ICONS } from '../Game/Overview/Record/RecordIcon'
 import { BatchGameNavCM } from '../GameBatchEditor/BatchGameNavCM'
 import { useGameBatchEditorStore } from '../GameBatchEditor/store'
+import { GameSelectionContext, useGameSelection } from '../GameBatchEditor/useGameSelection'
 import { useTheme } from '../ThemeProvider'
+
+type SortInfoBy = 'record.playTime' | 'record.score' | 'record.storageSize'
+
+function isSortInfoBy(by: configDocs['game']['gameList']['sort']['by']): by is SortInfoBy {
+  return by === 'record.playTime' || by === 'record.score' || by === 'record.storageSize'
+}
+
+function resolveSortInfoBy(sort: configDocs['game']['gameList']['sort']): SortInfoBy | null {
+  if (isSortInfoBy(sort.by)) return sort.by
+  if (sort.secondary && isSortInfoBy(sort.secondary.by)) return sort.secondary.by
+  return null
+}
 
 export function GameNav({
   gameId,
@@ -46,7 +59,8 @@ export function GameNav({
   const [warnInvalidGamePaths] = useConfigState('game.gameList.warnInvalidGamePaths')
   const [nsfw] = useGameState(gameId, 'apperance.nsfw')
   const [nsfwBlurLevel] = useConfigState('appearances.nsfwBlurLevel')
-  const [by] = useConfigState('game.gameList.sort.by')
+  const [sort] = useConfigState('game.gameList.sort')
+  const sortInfoBy = resolveSortInfoBy(sort)
   const isDarkMode = useTheme().isDark
   const location = useLocation()
   const navigate = useNavigate()
@@ -61,7 +75,13 @@ export function GameNav({
   const [isStorageSizeDialogOpen, setIsStorageSizeDialogOpen] = React.useState(false)
 
   const isSelected = useGameBatchEditorStore((state) => state.selectedGamesMap[gameId])
-  const isBatchMode = useGameBatchEditorStore((state) => state.isBatchMode)
+  const selectionCount = useGameBatchEditorStore(
+    (state) => Object.keys(state.selectedGamesMap).length
+  )
+  const selectionScope = useContext(GameSelectionContext)
+  const { handleGameClick: handleSelectionClick } = useGameSelection(gameId, {
+    clearOnNormalClick: true
+  })
 
   console.warn('[DEBUG] GameNav')
 
@@ -72,75 +92,28 @@ export function GameNav({
   const handleDoubleClick = (event: React.MouseEvent): void => {
     event.preventDefault()
     event.stopPropagation()
+    if (event.shiftKey || event.ctrlKey) return
     startGame(gameId, navigate, groupId)
   }
 
   const handleGameClick = (event: React.MouseEvent): void => {
-    const store = useGameBatchEditorStore.getState()
-    const { addGameId, removeGameId, clearGameIds, lastSelectedId, setLastSelectedId, gameIds } =
-      store
+    const routerGameId = location.pathname.includes('/library/games/')
+      ? location.pathname.split('/')[3]
+      : undefined
 
-    if (location.pathname.includes(`/library/games/`)) {
-      // If the current route is already a game detail page, add the gameId to the batch editor store
-      const routerGameId = location.pathname.split('/')[3]
-      addGameId(routerGameId)
-    }
-
-    // If special operations are performed in batch selection mode, prevent default navigation
-    if (event.shiftKey || event.ctrlKey || event.metaKey) {
-      event.preventDefault()
-
-      if (event.shiftKey && lastSelectedId) {
-        // Get all games in the currently visible AccordionContent
-        const accordionContent = (event.currentTarget as HTMLElement).closest('.accordion-content')
-
-        if (accordionContent) {
-          const visibleGameElements = Array.from(
-            accordionContent.querySelectorAll('[data-game-id]')
-          ) as HTMLElement[]
-
-          const currentGameIds = visibleGameElements
-            .map((el) => el.dataset.gameId)
-            .filter(Boolean) as string[]
-
-          const currentIndex = currentGameIds.indexOf(gameId)
-          const lastSelectedIndex = currentGameIds.indexOf(lastSelectedId)
-
-          if (currentIndex !== -1 && lastSelectedIndex !== -1) {
-            const start = Math.min(currentIndex, lastSelectedIndex)
-            const end = Math.max(currentIndex, lastSelectedIndex)
-
-            const selectedRange = currentGameIds.slice(start, end + 1)
-
-            if (event.ctrlKey || event.metaKey) {
-              // Shift + Ctrl/Cmd: Add to existing selection
-              selectedRange.forEach((id) => {
-                if (!gameIds.includes(id)) {
-                  addGameId(id)
-                }
-              })
-            } else {
-              // Shift: Replacement of existing options
-              clearGameIds()
-              selectedRange.forEach((id) => addGameId(id))
-            }
-          }
-        }
-      } else if (event.ctrlKey || event.metaKey) {
-        // Ctrl/Cmd Click
-        if (isSelected) {
-          removeGameId(gameId)
-        } else {
-          addGameId(gameId)
-        }
+    if (routerGameId) {
+      const store = useGameBatchEditorStore.getState()
+      // Shift ranges use the current detail game when no anchor has been established.
+      if (event.shiftKey && !store.selectionAnchor && selectionScope) {
+        store.setSelectionAnchor({ scopeId: selectionScope.scopeId, gameId: routerGameId })
+      } else if (event.ctrlKey && !event.shiftKey && selectionCount === 0) {
+        // A first Ctrl-click extends the current detail game's implicit selection.
+        store.updateSelection({ gameIds: [routerGameId], mode: 'add' })
       }
-
-      setLastSelectedId(gameId)
-    } else {
-      // Normal click - allow navigation to occur
-      // If not in batch mode, clear the selected games
-      clearGameIds()
     }
+
+    // Normal click clears batch selection and allows the link to navigate.
+    handleSelectionClick(event)
   }
 
   // Automatically expand too long game names on hover
@@ -237,7 +210,7 @@ export function GameNav({
 
         case 'sortInfo': {
           if (groupId !== 'recentGames') {
-            if (by === 'record.playTime' && playTime > 0) {
+            if (sortInfoBy === 'record.playTime' && playTime > 0) {
               navLayout.push(
                 <span
                   key={`${gameId}-sort-playtime`}
@@ -246,13 +219,13 @@ export function GameNav({
                   {formatDurationCompact(playTime)}
                 </span>
               )
-            } else if (by === 'record.score' && score !== -1) {
+            } else if (sortInfoBy === 'record.score' && score !== -1) {
               navLayout.push(
                 <span key={`${gameId}-sort-score`} className="flex-shrink-0 text-muted-foreground">
                   {score.toFixed(1)}
                 </span>
               )
-            } else if (by === 'record.storageSize' && storageSize >= 0) {
+            } else if (sortInfoBy === 'record.storageSize' && storageSize >= 0) {
               navLayout.push(
                 <span
                   key={`${gameId}-sort-storage`}
@@ -332,6 +305,7 @@ export function GameNav({
             <Nav
               ref={navRef}
               variant="gameList"
+              {...(selectionCount > 0 && { activeProps: {} })}
               className={cn(
                 'text-xs p-3 h-5 rounded-none transition-none w-full',
                 highlightLocalGames && 'text-foreground',
@@ -352,7 +326,7 @@ export function GameNav({
             </Nav>
           </div>
         </ContextMenuTrigger>
-        {isBatchMode ? (
+        {selectionCount > 1 ? (
           <BatchGameNavCM openAddCollectionDialog={() => setIsAddCollectionDialogOpen(true)} />
         ) : (
           <GameNavCM

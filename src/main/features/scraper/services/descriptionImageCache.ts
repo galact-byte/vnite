@@ -1,83 +1,63 @@
+import * as cheerio from 'cheerio'
 import { createHash } from 'crypto'
-import { GameDBManager, ConfigDBManager } from '~/core/database'
 import log from 'electron-log/main'
+import { ConfigDBManager, GameDBManager } from '~/core/database'
 
-/**
- * Generate MD5 hash for a URL
- */
+const DESCRIPTION_MEDIA_ATTRIBUTES = {
+  img: 'src',
+  video: 'poster'
+} as const
+
 function getUrlHash(url: string): string {
   return createHash('md5').update(url).digest('hex')
 }
 
-/**
- * Extract unique image URLs from HTML description (img src and video poster)
- * Returns an array of unique URLs
- */
-function extractUniqueImageUrls(html: string): string[] {
-  const urlSet = new Set<string>()
+function extractDescriptionMediaUrls($: cheerio.CheerioAPI): Set<string> {
+  const urls = new Set<string>()
 
-  // Match img src
-  const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi
-  let match
-  while ((match = imgRegex.exec(html)) !== null) {
-    urlSet.add(match[1])
+  for (const [tagName, attribute] of Object.entries(DESCRIPTION_MEDIA_ATTRIBUTES)) {
+    $(`${tagName}[${attribute}]`).each((_, element) => {
+      const url = $(element).attr(attribute)
+      if (!url || url.startsWith('data:')) return
+
+      urls.add(url)
+    })
   }
 
-  // Match video poster
-  const videoRegex = /<video[^>]+poster=["']([^"']+)["'][^>]*>/gi
-  while ((match = videoRegex.exec(html)) !== null) {
-    urlSet.add(match[1])
-  }
-
-  return Array.from(urlSet)
-}
-
-/**
- * From HTML description, extract image URLs and generate hashes
- * @returns Map<originalUrl, hash> - mapping from original URL to hash
- */
-function extractDescriptionImageUrls(description: string): Map<string, string> {
-  const images = new Map<string, string>()
-  if (!description) return images
-
-  const urls = extractUniqueImageUrls(description)
-  const newUrls = urls.filter((url) => !url.startsWith('data:') && !url.startsWith('attachment://'))
-
-  for (const url of newUrls) {
-    const hash = getUrlHash(url)
-    images.set(url, hash)
-  }
-
-  return images
+  return urls
 }
 
 /**
  * Replace description URLs with cached attachment URLs for successfully cached images
- * @param description - original HTML description
+ * @param $ - parsed HTML description fragment
  * @param gameId - game ID for constructing attachment URL
- * @param cachedUrls - mapping of successfully cached URLs to their hashes
+ * @param cachedUrlHashes - mapping of successfully cached URLs to their hashes
  * @returns description with replaced URLs
  */
-function replaceDescriptionUrls(
-  description: string,
+function replaceDescriptionMediaUrls(
+  $: cheerio.CheerioAPI,
   gameId: string,
-  cachedUrls: Map<string, string>
+  cachedUrlHashes: Map<string, string>
 ): string {
-  if (!description || cachedUrls.size === 0) return description
+  for (const [tagName, attribute] of Object.entries(DESCRIPTION_MEDIA_ATTRIBUTES)) {
+    $(`${tagName}[${attribute}]`).each((_, element) => {
+      const originalUrl = $(element).attr(attribute)
+      if (!originalUrl) return
 
-  let result = description
-  for (const [originalUrl, hash] of cachedUrls) {
-    const attachmentUrl = `attachment://game/${gameId}/images/description/${hash}.webp`
-    result = result.split(originalUrl).join(attachmentUrl)
+      const hash = cachedUrlHashes.get(originalUrl)
+      if (!hash) return
+
+      $(element).attr(attribute, `attachment://game/${gameId}/images/description/${hash}.webp`)
+    })
   }
-  return result
+
+  return $.root().html() ?? ''
 }
 
-export async function cacheDescriptionImages(description: string, gameId: string): Promise<void> {
-  if (!description) {
-    return
-  }
-
+/**
+ * Cache external media and retain cached attachments still referenced by the description.
+ */
+export async function cacheDescriptionImages(gameId: string, description: string): Promise<void> {
   const cacheEnabled = await ConfigDBManager.getConfigValue(
     'game.scraper.common.cacheDescriptionImages'
   )
@@ -85,32 +65,38 @@ export async function cacheDescriptionImages(description: string, gameId: string
     return
   }
 
-  const descriptionImageUrls = extractDescriptionImageUrls(description)
-  if (descriptionImageUrls.size === 0) {
-    return
-  }
+  const $ = cheerio.load(description, null, false)
+  const descriptionMediaUrls = extractDescriptionMediaUrls($)
 
   // Get existing cached hashes to skip already cached images
-  const existingHashes = await GameDBManager.listGameDescriptionImageHashes(gameId)
-  const existingHashSet = new Set(existingHashes)
+  const existingHashes = new Set(await GameDBManager.listGameDescriptionImageHashes(gameId))
 
-  const newImageEntries: [string, string][] = []
-  const cachedUrls = new Map<string, string>()
+  const newImageEntries: Array<{ originalUrl: string; hash: string }> = []
+  const cachedUrlHashes = new Map<string, string>()
   const neededHashes = new Set<string>()
+  const attachmentPrefix = `attachment://game/${gameId}/images/description/`
 
-  for (const [originalUrl, hash] of descriptionImageUrls) {
+  for (const originalUrl of descriptionMediaUrls) {
+    if (originalUrl.startsWith('attachment://')) {
+      if (originalUrl.startsWith(attachmentPrefix) && originalUrl.endsWith('.webp')) {
+        neededHashes.add(originalUrl.slice(attachmentPrefix.length, -5))
+      }
+      continue
+    }
+
+    const hash = getUrlHash(originalUrl)
     neededHashes.add(hash)
-    if (existingHashSet.has(hash)) {
-      cachedUrls.set(originalUrl, hash)
+    if (existingHashes.has(hash)) {
+      cachedUrlHashes.set(originalUrl, hash)
     } else {
-      newImageEntries.push([originalUrl, hash])
+      newImageEntries.push({ originalUrl, hash })
     }
   }
 
   // Download new images in parallel
   if (newImageEntries.length > 0) {
     const results = await Promise.allSettled(
-      newImageEntries.map(async ([originalUrl, hash]) => {
+      newImageEntries.map(async ({ originalUrl, hash }) => {
         await GameDBManager.setGameDescriptionImage(gameId, hash, originalUrl)
         return { originalUrl, hash }
       })
@@ -118,7 +104,7 @@ export async function cacheDescriptionImages(description: string, gameId: string
 
     for (const result of results) {
       if (result.status === 'fulfilled') {
-        cachedUrls.set(result.value.originalUrl, result.value.hash)
+        cachedUrlHashes.set(result.value.originalUrl, result.value.hash)
       } else {
         log.warn(
           `[DescriptionImageCache] Failed to cache description image:`,
@@ -128,21 +114,18 @@ export async function cacheDescriptionImages(description: string, gameId: string
     }
   }
 
-  // Clean up orphaned cache images in parallel
-  const orphanedHashes = existingHashes.filter((hash) => !neededHashes.has(hash))
-  if (orphanedHashes.length > 0) {
-    await Promise.all(
-      orphanedHashes.map((hash) =>
-        GameDBManager.removeGameDescriptionImage(gameId, hash).catch((err) => {
-          log.warn(`[DescriptionImageCache] Failed to remove orphaned cache image ${hash}:`, err)
-        })
-      )
-    )
+  // Delete sequentially because each attachment removal advances the PouchDB document revision.
+  for (const hash of existingHashes) {
+    if (neededHashes.has(hash)) continue
+
+    await GameDBManager.removeGameDescriptionImage(gameId, hash).catch((err) => {
+      log.warn(`[DescriptionImageCache] Failed to remove orphaned cache image ${hash}:`, err)
+    })
   }
 
   // Update description with cached URLs
-  if (cachedUrls.size > 0) {
-    const newDescription = replaceDescriptionUrls(description, gameId, cachedUrls)
+  if (cachedUrlHashes.size > 0) {
+    const newDescription = replaceDescriptionMediaUrls($, gameId, cachedUrlHashes)
     await GameDBManager.setGameValue(gameId, 'metadata.description', newDescription)
   }
 }

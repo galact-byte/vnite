@@ -1,6 +1,8 @@
-import { scraperManager } from './services'
 import { ScraperIdentifier } from '@appTypes/utils'
+import { GameDBManager } from '~/core/database'
 import { ipcManager } from '~/core/ipc'
+import { scraperManager } from './services'
+import { cacheDescriptionImages } from './services/descriptionImageCache'
 import { ScraperCapabilities } from './services/types'
 
 export function setupScraperIPC(): void {
@@ -19,6 +21,13 @@ export function setupScraperIPC(): void {
     'scraper:get-game-metadata',
     async (_, dataSource: string, identifier: ScraperIdentifier) => {
       return await scraperManager.getGameMetadata(dataSource, identifier)
+    }
+  )
+
+  ipcManager.handle(
+    'scraper:get-game-score',
+    async (_, dataSource: string, identifier: ScraperIdentifier) => {
+      return await scraperManager.getGameScore(dataSource, identifier)
     }
   )
 
@@ -61,6 +70,14 @@ export function setupScraperIPC(): void {
     'scraper:get-game-description-list',
     async (_, identifier: ScraperIdentifier) => {
       return await scraperManager.getGameDescriptionList(identifier)
+    }
+  )
+
+  ipcManager.handle(
+    'scraper:apply-game-description',
+    async (_, gameId: string, description: string) => {
+      await GameDBManager.setGameValue(gameId, 'metadata.description', description)
+      await cacheDescriptionImages(gameId, description)
     }
   )
 

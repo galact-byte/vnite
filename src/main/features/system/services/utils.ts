@@ -14,7 +14,7 @@ import {
   upscaleImage
 } from '~/utils'
 import icon from '../../../../../resources/icon.png?asset'
-import { getAppTempPath, getLogsPath } from './path'
+import { getAppTempPath, getLogsPath, getShortcutIconPath } from './path'
 
 export async function setupContextMenu(): Promise<void> {
   contextMenu({
@@ -138,21 +138,6 @@ export async function updateOpenAtLogin(): Promise<void> {
   }
 }
 
-export async function saveGameIconByFile(gameId: string, filePath: string): Promise<void> {
-  try {
-    // Get file icon
-    const icon = await app.getFileIcon(filePath)
-
-    // Save icon
-    await GameDBManager.setGameImage(gameId, 'icon', icon.toPNG())
-
-    console.log('Save Icon Successful:', filePath)
-  } catch (error) {
-    console.error('Failed to save icon:', error)
-    throw error
-  }
-}
-
 export async function createGameShortcut(gameId: string, targetPath: string): Promise<void> {
   try {
     // Get game information
@@ -160,21 +145,19 @@ export async function createGameShortcut(gameId: string, targetPath: string): Pr
     const shortcutName = sanitizeFilenameComponent(gameName)
 
     const originalIconPath = await GameDBManager.getGameImage(gameId, 'icon', 'file')
-
-    // ico icon path
-    const iconPath = getAppTempPath(`icon_${gameId}_${Date.now()}.ico`)
-
-    // Convert icons to ico format
-    if (originalIconPath) {
-      await convertToIcon(originalIconPath, iconPath, {
-        sizes: [32],
-        quality: 100
-      })
-    }
+    const iconPath = originalIconPath
+      ? await convertToIcon(
+          originalIconPath,
+          getShortcutIconPath(`${sanitizeFilenameComponent(gameId)}.ico`),
+          {
+            sizes: [16, 24, 32, 48, 64, 128, 256]
+          }
+        )
+      : undefined
     // Creating URL shortcuts
     await createUrlShortcut({
       url: `vnite://rungameid/${gameId}`,
-      iconPath: iconPath,
+      iconPath,
       targetPath: targetPath,
       name: shortcutName,
       description: `Launch ${gameName} in Vnite`,
@@ -182,6 +165,7 @@ export async function createGameShortcut(gameId: string, targetPath: string): Pr
     })
   } catch (error) {
     log.error('[Utils] Error creating game shortcut:', error)
+    throw error
   }
 }
 

@@ -1,13 +1,23 @@
 import { GameList, GameMetadata, ScraperIdentifier } from '@appTypes/utils'
 export type { ScraperCapabilities } from '@appTypes/utils'
 
+export type GameMetadataAggregationField = keyof GameMetadata
+
+export type GameMetadataAggregationResult<Fields extends GameMetadataAggregationField> = {
+  dataSource: string
+  metadata: Pick<GameMetadata, Fields>
+}[]
+
+export type GameMetadataAggregationSeed = Partial<Record<string, GameMetadata | null>>
+
 export interface ScraperProvider {
   id: string
   name: string
 
   searchGames?(gameName: string, gamePath?: string): Promise<GameList>
   checkGameExists?(identifier: ScraperIdentifier): Promise<boolean>
-  getGameMetadata?(identifier: ScraperIdentifier): Promise<GameMetadata>
+  getGameMetadata?(identifier: ScraperIdentifier): Promise<GameMetadata | null>
+  getGameScore?(identifier: ScraperIdentifier): Promise<number | null>
   getGameWideCovers?(identifier: ScraperIdentifier): Promise<string[]>
   getGameBackgrounds?(identifier: ScraperIdentifier): Promise<string[]>
   getGameCovers?(identifier: ScraperIdentifier): Promise<string[]>

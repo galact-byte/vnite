@@ -327,15 +327,12 @@ function PathComponent(
   const [isScreenshotPathValid, setIsScreenshotPathValid] = useState(true)
   const [screenshotPath, setScreenshotPath, saveScreenshotPath, setScreenshotPathAndSave] =
     useGameLocalState(gameId, 'path.screenshotPath', true)
+  const [autoBackupSave, setAutoBackupSave] = useGameState(gameId, 'save.autoBackupSave')
   const [autoRestoreSave, setAutoRestoreSave] = useGameState(gameId, 'save.autoRestoreSave')
 
   const [showSearchDialog, setShowSearchDialog] = useState(false)
   const [searchResults, setSearchResults] = useState<string[]>([])
   const [selectedSearchResults, setSelectedSearchResults] = useState<Record<string, boolean>>({})
-
-  const refreshKnownGame = useCallback(() => {
-    ipcManager.send('native-monitor:update-local-game', gameId)
-  }, [gameId])
 
   const showPathRelocationNotice = useCallback(
     (relocatedFieldCount?: number) => {
@@ -346,12 +343,11 @@ function PathComponent(
     [t]
   )
 
-  const saveGamePathAndRefreshMonitor = useCallback(async () => {
+  const saveGamePathAndNotify = useCallback(async () => {
     const result = await saveGamePath()
-    refreshKnownGame()
     showPathRelocationNotice(result?.relocatedFieldCount)
     return result
-  }, [refreshKnownGame, saveGamePath, showPathRelocationNotice])
+  }, [saveGamePath, showPathRelocationNotice])
 
   const openSearchDialog = async (): Promise<void> => {
     const promise = ipcManager.invoke('game:search-save-paths', gameId)
@@ -385,9 +381,9 @@ function PathComponent(
   }
 
   const saveAll = useCallback(async () => {
-    await saveGamePathAndRefreshMonitor()
+    await saveGamePathAndNotify()
     await Promise.all([saveRootPath(), saveSavePaths(), saveScreenshotPath()])
-  }, [saveGamePathAndRefreshMonitor, saveRootPath, saveSavePaths, saveScreenshotPath])
+  }, [saveGamePathAndNotify, saveRootPath, saveSavePaths, saveScreenshotPath])
   useImperativeHandle(ref, () => ({ save: saveAll }), [saveAll])
 
   useEffect(() => {
@@ -459,7 +455,6 @@ function PathComponent(
       return
     }
     const result = await setGamePathAndSave(filePath)
-    refreshKnownGame()
     showPathRelocationNotice(result?.relocatedFieldCount)
     const isIconAccessible = await ipcManager.invoke(
       'db:check-attachment',
@@ -468,7 +463,7 @@ function PathComponent(
       'images/icon.webp'
     )
     if (!isIconAccessible) {
-      await ipcManager.invoke('utils:save-game-icon-by-file', gameId, filePath)
+      await ipcManager.invoke('game:save-icon-by-file', gameId, filePath)
     }
     if (!monitorPath) {
       const presetPromise = ipcManager.invoke('launcher:select-preset', 'default', gameId)
@@ -477,7 +472,6 @@ function PathComponent(
         success: t('detail.properties.path.notifications.success'),
         error: (error) => `${error}`
       })
-      void presetPromise.then(refreshKnownGame, refreshKnownGame)
     }
   }
 
@@ -541,7 +535,7 @@ function PathComponent(
                 className={cn('flex-1')}
                 value={gamePath}
                 onChange={(e) => setGamePath(e.target.value)}
-                onBlur={saveGamePathAndRefreshMonitor}
+                onBlur={saveGamePathAndNotify}
               />
               <Button variant={'outline'} size={'icon'} onClick={selectGamePath}>
                 <span className={cn('icon-[mdi--file-outline] w-5 h-5')}></span>
@@ -678,6 +672,16 @@ function PathComponent(
                   </SelectGroup>
                 </SelectContent>
               </Select>
+            </div>
+          </div>
+
+          {/* Auto backup save */}
+          <div className={cn('flex flex-row gap-5 items-center justify-start text-sm')}>
+            <div className={cn('whitespace-nowrap select-none')}>
+              {t('detail.properties.path.autoBackupSave')}
+            </div>
+            <div>
+              <Switch checked={autoBackupSave} onCheckedChange={setAutoBackupSave} />
             </div>
           </div>
 

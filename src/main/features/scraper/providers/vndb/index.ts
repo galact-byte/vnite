@@ -2,6 +2,7 @@ import { ScraperProvider } from '../../services/types'
 import {
   searchGamesFromVNDB,
   getGameMetadataFromVNDB,
+  getGameScoreFromVNDB,
   checkGameExistsOnVNDB,
   getGameBackgroundsFromVNDB,
   getGameCoverFromVNDB
@@ -20,12 +21,16 @@ export const vndbProvider: ScraperProvider = {
     return await checkGameExistsOnVNDB(identifier)
   },
 
-  async getGameMetadata(identifier: ScraperIdentifier): Promise<GameMetadata> {
+  async getGameMetadata(identifier: ScraperIdentifier): Promise<GameMetadata | null> {
     return await getGameMetadataFromVNDB(identifier)
   },
 
   async getGameBackgrounds(identifier: ScraperIdentifier): Promise<string[]> {
     return await getGameBackgroundsFromVNDB(identifier)
+  },
+
+  async getGameScore(identifier: ScraperIdentifier): Promise<number | null> {
+    return await getGameScoreFromVNDB(identifier)
   },
 
   async getGameCovers(identifier: ScraperIdentifier): Promise<string[]> {

@@ -7,7 +7,7 @@
       "tooltip": "Supports searching by game name, developer, release date and other metadata"
     },
     "gameListSettings": "Game List Settings",
-    "collapseAllGroups": "Collapse All Groups",
+    "groupExpandCollapse": "L: Collapse all groups\nR: Expand all groups",
     "groupBy": "Group by",
     "groups": {
       "none": "No Grouping",
@@ -16,6 +16,10 @@
       "genres": "Genres",
       "playStatus": "Play Status"
     }
+  },
+  "sortingControls": {
+    "secondary": "Secondary Sort",
+    "none": "None"
   },
   "list": {
     "search": {
@@ -37,18 +41,7 @@
       "noResults": "No games found matching your criteria"
     },
     "all": {
-      "title": "All Games",
-      "sortBy": "Sort by",
-      "sortOptions": {
-        "name": "Name",
-        "sortName": "Sort Name",
-        "releaseDate": "Release Date",
-        "lastRunDate": "Last Played Date",
-        "addDate": "Date Added",
-        "playTime": "Play Time",
-        "score": "Score",
-        "storageSize": "Game Size"
-      }
+      "title": "All Games"
     },
     "playStatus": {
       "adjustOrder": "Adjust Order"
@@ -100,13 +93,15 @@
       "options": {
         "name": "Name",
         "sortName": "Sort Name",
+        "developers": "Developer",
         "releaseDate": "Release Date",
         "lastRunDate": "Last Played Date",
         "addDate": "Date Added",
         "playTime": "Play Time",
         "score": "Score",
         "custom": "Custom Order",
-        "storageSize": "Game Size"
+        "storageSize": "Game Size",
+        "playStatus": "Play Status"
       }
     },
     "gameCard": {
@@ -264,6 +259,9 @@
           "error": "Search failed: {{message}}",
           "notFound": "No related descriptions found",
           "searchError": "Search error: {{error}}",
+          "applyLoading": "Applying description…",
+          "applySuccess": "Description applied successfully",
+          "applyError": "Failed to apply description: {{message}}",
           "selectRequired": "Please select a description"
         }
       },
@@ -592,7 +590,8 @@
           "error": "Search failed: {{message}}"
         },
         "maxBackups": "Maximum Save Backups",
-        "autoRestoreSave": "Auto restore latest backup on launch",
+        "autoBackupSave": "Automatic Save Backup",
+        "autoRestoreSave": "Automatically restore the latest save on launch",
         "syncSpace": {
           "converting": "Converting save to sync space...",
           "convertSuccess": "Successfully converted to sync space and linked",
@@ -667,6 +666,8 @@
           "empty": "Please enter a link address"
         },
         "crop": {
+          "lockWideCoverAspect": "Lock aspect ratio",
+          "backgroundGuideHelp": "The dashed line indicates where the detail page header background fully fades out in the current window layout. This is only a guide; changing layout settings will also affect the displayed result.",
           "title": "Adjust Image Size",
           "size": "{{width}} × {{height}} px"
         },
@@ -842,6 +843,7 @@
     "fields": {
       "#all": "All Fields",
       "#missing": "Missing Fields",
+      "score": "Score",
       "name": "Name",
       "originalName": "Original Name",
       "releaseDate": "Release Date",

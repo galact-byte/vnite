@@ -1,6 +1,7 @@
-import type { LauncherPreset } from './launcherPreset'
-import { DEFAULT_LOCAL_UPSCALER_CONFIG, type LocalUpscalerConfig } from '../utils/upscaler'
 import { defaultReportExportOptions, type ReportExportOptions } from '../report'
+import { DEFAULT_LOCAL_UPSCALER_CONFIG, type LocalUpscalerConfig } from '../utils/upscaler'
+import { DEFAULT_PLAY_STATUS_ORDER, type gameDoc, type GameSortField } from './game'
+import type { LauncherPreset } from './launcherPreset'
 
 export enum NSFWBlurLevel {
   Off = 0,
@@ -44,15 +45,19 @@ export interface configDocs {
     hideWindowAfterGameStart: boolean
     showWindowAfterGameExit: boolean
     enableForegroundTimer: boolean
+    enhancedProcessMonitoring: boolean
     foregroundWaitTime: number
     ignoreShortInterruptions: number
     ignoreShortSessions: number
   }
   game: {
+    sortNameFallback: 'name' | 'originalName' | 'folderName'
+    playStatusSortOrder: gameDoc['record']['playStatus'][]
     scraper: {
       common: {
         defaultDataSource: 'steam' | 'vndb' | 'bangumi' | 'ymgal' | 'igdb' | 'dlsite' | string
         defaultMediaDataSource: 'google' | string
+        fetchScoreOnAdd: boolean
         cacheDescriptionImages: boolean
       }
       vndb: {
@@ -64,30 +69,22 @@ export interface configDocs {
     }
     showcase: {
       sort: {
-        by:
-          | 'metadata.name'
-          | 'metadata.sortName'
-          | 'metadata.releaseDate'
-          | 'record.lastRunDate'
-          | 'record.addDate'
-          | 'record.playTime'
-          | 'record.score'
-          | 'record.storageSize'
+        by: GameSortField
         order: 'asc' | 'desc'
+        secondary: {
+          by: GameSortField
+          order: 'asc' | 'desc'
+        } | null
       }
     }
     gameList: {
       sort: {
-        by:
-          | 'metadata.name'
-          | 'metadata.sortName'
-          | 'metadata.releaseDate'
-          | 'record.lastRunDate'
-          | 'record.addDate'
-          | 'record.playTime'
-          | 'record.score'
-          | 'record.storageSize'
+        by: GameSortField
         order: 'asc' | 'desc'
+        secondary: {
+          by: GameSortField
+          order: 'asc' | 'desc'
+        } | null
       }
       groupSortSummary: {
         by: 'none' | 'record.playTime' | 'record.score' | 'record.storageSize'
@@ -423,18 +420,21 @@ export const DEFAULT_CONFIG_VALUES: Readonly<configDocs> = {
     quitToTray: false,
     language: '',
     hideWindowAfterGameStart: true,
-    // 默认延续现有版本的退出行为，升级后仍会显示并聚焦主窗口，用户可在设置中关闭。
     showWindowAfterGameExit: true,
     enableForegroundTimer: true,
+    enhancedProcessMonitoring: false,
     foregroundWaitTime: 10,
     ignoreShortInterruptions: 0,
     ignoreShortSessions: 0
   },
   game: {
+    sortNameFallback: 'name',
+    playStatusSortOrder: [...DEFAULT_PLAY_STATUS_ORDER],
     scraper: {
       common: {
         defaultDataSource: 'steam',
         defaultMediaDataSource: 'google',
+        fetchScoreOnAdd: false,
         cacheDescriptionImages: false
       },
       vndb: {
@@ -447,13 +447,15 @@ export const DEFAULT_CONFIG_VALUES: Readonly<configDocs> = {
     showcase: {
       sort: {
         by: 'metadata.name',
-        order: 'desc' as const
+        order: 'desc' as const,
+        secondary: null
       }
     },
     gameList: {
       sort: {
         by: 'metadata.name',
-        order: 'desc' as const
+        order: 'desc' as const,
+        secondary: null
       },
       groupSortSummary: {
         by: 'none',

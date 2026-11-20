@@ -16,6 +16,7 @@ import {
   isBatchStorageSizeCalculationRunning,
   recalculateLastRunDate,
   restoreGameSave,
+  saveGameIconByFile,
   updateGameMemoryCover,
   upscaleGameBackground,
   checkSaveInSyncSpace,
@@ -33,6 +34,10 @@ export function setupGameIPC(): void {
       return await GameDBManager.setGameImage(gameId, type, image)
     }
   )
+
+  ipcManager.handle('game:save-icon-by-file', async (_, gameId: string, filePath: string) => {
+    await saveGameIconByFile(gameId, filePath)
+  })
 
   ipcManager.handle('game:search-save-paths', async (_, gameId: string) => {
     return await searchGameSavePaths(gameId)

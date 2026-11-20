@@ -7,7 +7,7 @@
       "tooltip": "支持通过游戏名、开发者、发行日期等元数据进行搜索"
     },
     "gameListSettings": "游戏列表设置",
-    "collapseAllGroups": "折叠所有分组",
+    "groupExpandCollapse": "L：折叠全部\nR：展开全部",
     "groupBy": "分组依据",
     "groups": {
       "none": "无分组",
@@ -16,6 +16,10 @@
       "genres": "类别",
       "playStatus": "游玩状态"
     }
+  },
+  "sortingControls": {
+    "secondary": "二级排序",
+    "none": "无"
   },
   "list": {
     "search": {
@@ -37,18 +41,7 @@
       "noResults": "没有找到符合条件的游戏"
     },
     "all": {
-      "title": "所有游戏",
-      "sortBy": "排序依据",
-      "sortOptions": {
-        "name": "名称",
-        "sortName": "排序名称",
-        "releaseDate": "发布日期",
-        "lastRunDate": "最后运行日期",
-        "addDate": "添加日期",
-        "playTime": "游玩时间",
-        "score": "评分",
-        "storageSize": "游戏大小"
-      }
+      "title": "所有游戏"
     },
     "playStatus": {
       "adjustOrder": "调整顺序"
@@ -100,13 +93,15 @@
       "options": {
         "name": "名称",
         "sortName": "排序名称",
+        "developers": "开发商",
         "releaseDate": "发布日期",
         "lastRunDate": "最后运行日期",
         "addDate": "添加日期",
         "playTime": "游玩时间",
         "score": "评分",
         "custom": "自定义顺序",
-        "storageSize": "游戏大小"
+        "storageSize": "游戏大小",
+        "playStatus": "游玩状态"
       }
     },
     "gameCard": {
@@ -264,6 +259,9 @@
           "error": "搜索失败: {{message}}",
           "notFound": "没有找到相关描述",
           "searchError": "搜索出错: {{error}}",
+          "applyLoading": "正在应用简介…",
+          "applySuccess": "简介应用成功",
+          "applyError": "应用简介失败: {{message}}",
           "selectRequired": "请选择一个描述"
         }
       },
@@ -592,6 +590,7 @@
           "error": "搜索失败：{{message}}"
         },
         "maxBackups": "最大存档备份数量",
+        "autoBackupSave": "自动备份存档",
         "autoRestoreSave": "启动时自动还原最新存档",
         "syncSpace": {
           "converting": "正在转换存档至同步空间...",
@@ -667,6 +666,8 @@
           "empty": "请输入链接地址"
         },
         "crop": {
+          "lockWideCoverAspect": "锁定宽高比",
+          "backgroundGuideHelp": "虚线表示在当前窗口布局下，详情页顶部背景完全淡出的位置。仅供参考，各项布局配置变化后展示效果也会有所变化。",
           "title": "调整图片大小",
           "size": "{{width}} × {{height}} px"
         },
@@ -842,6 +843,7 @@
     "fields": {
       "#all": "所有字段",
       "#missing": "缺失字段",
+      "score": "评分",
       "name": "名称",
       "originalName": "原始名称",
       "releaseDate": "发行日期",

@@ -1,6 +1,10 @@
 {
   "title": "Vnite Settings",
   "general": {
+    "enhancedMonitoring": {
+      "title": "Enhanced process monitoring",
+      "description": "Prefer enhanced monitoring, requesting administrator access only for the background collector.\nIf authorization is cancelled or startup fails, normal mode is used without changing this preference.\nCannot be changed while games are running."
+    },
     "title": "General",
     "language": "Language",
     "languageDescription": "Choose the display language for the application",
@@ -536,6 +540,8 @@
       "defaultDataSourceDescription": "Choose default data source",
       "defaultMediaDataSource": "Default Media Data Source",
       "defaultMediaDataSourceDescription": "Select the default search data source used on the \"Properties → Media\" page\nSome data sources do not support icon or logo searches. If the selected default source is unavailable, the system will automatically fall back to Google",
+      "fetchScoreOnAdd": "Fetch Scores When Adding Games",
+      "fetchScoreOnAddDescription": "Try to fetch a score from the selected data source when adding a game and record its source.",
       "cacheDescriptionImages": "Cache Description Images",
       "cacheDescriptionImagesDescription": "Download and cache images in game descriptions locally for offline viewing and faster loading"
     },
@@ -616,6 +622,24 @@
   },
   "metadata": {
     "title": "Metadata",
+    "sorting": {
+      "sectionTitle": "Sorting"
+    },
+    "sortNameFallback": {
+      "title": "Sort Name Fallback",
+      "description": "Choose the value used for sorting when a game has no Sort Name. If the selected value is also missing, Name is used.",
+      "options": {
+        "name": "Name",
+        "originalName": "Original Name",
+        "folderName": "Folder Name"
+      }
+    },
+    "playStatusSortOrder": {
+      "title": "Play Status Sort Order",
+      "description": "Configure the status order used when sorting games by Play Status.",
+      "button": "Configure",
+      "popoverTitle": "Play Status Order"
+    },
     "transformer": {
       "title": "Transformer",
       "enable": "Enable Transformer",

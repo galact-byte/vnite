@@ -4,6 +4,31 @@ export type GameMediaType = 'cover' | 'background' | 'icon' | 'logo' | 'wideCove
 
 export type GameMemoryViewMode = 'grid' | 'full' | 'masonry' | 'list'
 
+export type GameSortField =
+  | 'metadata.name'
+  | 'metadata.sortName'
+  | 'metadata.developers'
+  | 'metadata.releaseDate'
+  | 'record.lastRunDate'
+  | 'record.addDate'
+  | 'record.playTime'
+  | 'record.score'
+  | 'record.storageSize'
+  | 'record.playStatus'
+
+export const GAME_SORT_FIELDS: readonly GameSortField[] = [
+  'metadata.name',
+  'metadata.sortName',
+  'metadata.developers',
+  'metadata.releaseDate',
+  'record.lastRunDate',
+  'record.addDate',
+  'record.playTime',
+  'record.score',
+  'record.storageSize',
+  'record.playStatus'
+]
+
 export type gameDocs = {
   [gameId: string]: gameDoc
 }
@@ -38,6 +63,7 @@ export interface gameDoc {
     addDate: string
     lastRunDate: string
     score: number
+    scoreSource: string | null
     playTime: number
     playStatus: 'unplayed' | 'playing' | 'partial' | 'finished' | 'multiple' | 'shelved'
     hideFromRecentGames: boolean
@@ -61,6 +87,7 @@ export interface gameDoc {
       }
     }
     maxBackups: number
+    autoBackupSave: boolean
     autoRestoreSave: boolean
   }
   memory: {
@@ -97,16 +124,12 @@ export interface gameCollectionDoc {
   _id: string
   name: string
   sort: number
-  sortBy:
-    | 'metadata.name'
-    | 'metadata.sortName'
-    | 'metadata.releaseDate'
-    | 'record.lastRunDate'
-    | 'record.addDate'
-    | 'record.playTime'
-    | 'record.storageSize'
-    | 'custom'
+  sortBy: GameSortField | 'custom'
   sortOrder: 'asc' | 'desc'
+  secondarySort: {
+    by: GameSortField
+    order: 'asc' | 'desc'
+  } | null
   games: string[]
 }
 
@@ -190,6 +213,7 @@ export const DEFAULT_GAME_COLLECTION_VALUES: Readonly<gameCollectionDoc> = {
   sort: 0,
   sortBy: 'custom',
   sortOrder: 'asc',
+  secondarySort: null,
   games: []
 } as const
 
@@ -222,6 +246,7 @@ export const DEFAULT_GAME_VALUES: Readonly<gameDoc> = {
     addDate: '',
     lastRunDate: '',
     score: -1,
+    scoreSource: null,
     playTime: 0,
     playStatus: 'unplayed',
     hideFromRecentGames: false,
@@ -232,6 +257,7 @@ export const DEFAULT_GAME_VALUES: Readonly<gameDoc> = {
   save: {
     saveList: {},
     maxBackups: 7,
+    autoBackupSave: true,
     autoRestoreSave: false
   },
   memory: {
@@ -296,8 +322,9 @@ export interface BatchGameInfo {
   dataSource: string
   name: string
   id: string
-  status: 'idle' | 'loading' | 'success' | 'error' | 'existed'
+  status: 'idle' | 'loading' | 'success' | 'error' | 'existed' | 'review'
   dirPath: string
+  duplicateIds?: string[]
 }
 
 export enum TimerStatus {

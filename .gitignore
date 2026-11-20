@@ -36,3 +36,7 @@ vnite-webdav-sync-plan.md
 .verify-tmp/*
 !.verify-tmp/path-relocation-live-test.ts
 !.verify-tmp/sync-space-live-test.ts
+
+# Additional local AI instruction files
+/CLAUDE.md
+/GEMINI.md

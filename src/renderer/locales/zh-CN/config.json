@@ -1,6 +1,10 @@
 {
   "title": "Vnite 设置",
   "general": {
+    "enhancedMonitoring": {
+      "title": "增强进程监听",
+      "description": "优先使用增强监控，仅为后台采集程序请求管理员权限。\n授权取消或启动失败时自动使用普通模式，保留此偏好；游戏运行中无法变更此设置"
+    },
     "title": "通用",
     "language": "语言",
     "languageDescription": "选择应用程序的显示语言",
@@ -536,6 +540,8 @@
       "defaultDataSourceDescription": "选择默认数据源",
       "defaultMediaDataSource": "默认媒体数据源",
       "defaultMediaDataSourceDescription": "选择“属性 → 媒体”页面使用的默认搜索数据源\n部分数据源不支持图标或徽标搜索；当所选默认数据源不可用时，将自动回退至「Google」",
+      "fetchScoreOnAdd": "添加游戏时获取评分",
+      "fetchScoreOnAddDescription": "添加游戏时，尝试从所选数据源获取评分并记录来源。",
       "cacheDescriptionImages": "缓存简介内图片到本地",
       "cacheDescriptionImagesDescription": "将游戏简介中的图片下载并缓存到本地，以实现离线查看和加快加载速度"
     },
@@ -616,6 +622,24 @@
   },
   "metadata": {
     "title": "元数据",
+    "sorting": {
+      "sectionTitle": "排序"
+    },
+    "sortNameFallback": {
+      "title": "排序名称缺失时使用",
+      "description": "游戏未设置排序名称时，选择用于排序的替代值。所选值同样缺失时，将使用名称。",
+      "options": {
+        "name": "名称",
+        "originalName": "原名",
+        "folderName": "目录名"
+      }
+    },
+    "playStatusSortOrder": {
+      "title": "游玩状态排序顺序",
+      "description": "配置按游玩状态排序时各状态的排列顺序。",
+      "button": "配置",
+      "popoverTitle": "游玩状态顺序"
+    },
     "transformer": {
       "title": "转换器",
       "enable": "启用转换器",

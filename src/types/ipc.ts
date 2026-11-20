@@ -10,6 +10,7 @@ import type { SaveSyncProbeResult, SaveSyncResolution } from '@appTypes/sync'
 import { BatchUpdateGameMetadataProgress, OverallScanProgress } from '@appTypes/utils'
 import { ProgressInfo, UpdateCheckResult } from 'electron-updater'
 import type { GameMediaType, LauncherPresetApplyResult } from './models'
+import type { MonitorStatus } from './monitor'
 import {
   BatchGameInfo,
   configDocs,
@@ -93,16 +94,12 @@ type MainIpcEvents =
 
       'launcher:start-game': [gameId: string]
 
-      'native-monitor:update-local-game': [gameId: string]
-      'system:change-process-monitor': [monitor: 'new' | 'legacy']
-      'system:change-foreground-timer': [isEnabled: boolean]
-      'system:change-foreground-timer-wait-time': [waitTime: number]
-
       // Database phase events
       'db:games-loaded': []
     }
   | {
       // Handler events (request-response communication from renderer to main)
+      'monitor:get-status': () => MonitorStatus
 
       'system:select-path-dialog': (
         properties: NonNullable<Electron.OpenDialogOptions['properties']>,
@@ -144,7 +141,6 @@ type MainIpcEvents =
         width: number
         height: number
       }) => string
-      'utils:save-game-icon-by-file': (gameId: string, filePath: string) => void
       'utils:download-temp-image': (url: string) => string
       'utils:test-upscaler': () => void
       'utils:save-clipboard-image': () => string
@@ -275,6 +271,7 @@ type MainIpcEvents =
 
       // Game media management events
       'game:set-image': (gameId: string, type: GameMediaType, image: string) => void
+      'game:save-icon-by-file': (gameId: string, filePath: string) => void
       'game:get-media-path': (gameId: string, type: GameMediaType) => string | null
       'game:remove-media': (gameId: string, type: GameMediaType) => void
       'game:get-memory-cover-path': (gameId: string, memoryId: string) => string | null
@@ -361,7 +358,11 @@ type MainIpcEvents =
       'scraper:get-game-metadata': (
         dataSource: string,
         identifier: ScraperIdentifier
-      ) => GameMetadata
+      ) => GameMetadata | null
+      'scraper:get-game-score': (
+        dataSource: string,
+        identifier: ScraperIdentifier
+      ) => { score: number; source: string } | null
       'scraper:get-game-backgrounds': (
         dataSource: string,
         identifier: ScraperIdentifier
@@ -374,6 +375,7 @@ type MainIpcEvents =
       'scraper:get-game-icons': (dataSource: string, identifier: ScraperIdentifier) => string[]
       'scraper:get-game-logos': (dataSource: string, identifier: ScraperIdentifier) => string[]
       'scraper:get-game-description-list': (identifier: ScraperIdentifier) => GameDescriptionList
+      'scraper:apply-game-description': (gameId: string, description: string) => void
       'scraper:get-game-tags-list': (identifier: ScraperIdentifier) => GameTagsList
       'scraper:get-game-extra-info-list': (identifier: ScraperIdentifier) => GameExtraInfoList
       'scraper:get-game-developers-list': (identifier: ScraperIdentifier) => GameDevelopersList
@@ -392,6 +394,7 @@ type MainIpcEvents =
       }[]
 
       // Theme events
+      'theme:set-mode': (mode: 'system' | 'dark' | 'light') => void
       'theme:save': (cssContent: string) => void
       'theme:load': () => string | null
       'theme:select-preset': (preset: string) => string
@@ -568,6 +571,7 @@ type RendererIpcEvents = {
   'plugin:update-plugin-stats': [stats: PluginStatsData]
 
   'monitor:timer-status-change': [gameTimerStatus: GameTimerStatus[]]
+  'monitor:status-changed': [status: MonitorStatus]
 }
 
 // Export types for use in both main and renderer
